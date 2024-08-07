@@ -1,9 +1,6 @@
-import isc_feature_extractor
-import timm
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torchvision import transforms
 
 
 def gem(x, p=3, eps=1e-6):
@@ -65,99 +62,3 @@ class ISCNet(nn.Module):
 
     def get_output_dim(self):
         return self.fc.out_features
-
-def create_isc_model(
-    weight_file_path: str,
-    fc_dim: int = 256,
-    p: float = 1.0,
-    eval_p: float = 1.0,
-    l2_normalize: bool = True,
-    device: str = "cuda",
-    is_training: bool = False,
-):
-    """
-    Create a model for image copy-detection task.
-
-    Args:
-        weight_file_path (`str=None`):
-            Weight file path.
-        fc_dim (`int=256`):
-            Feature dimension of the fc layer.
-        p (`float=1.0`):
-            Power used in gem pooling for training.
-        eval_p (`float=1.0`):
-            Power used in gem pooling for evaluation.
-        l2_normalize (`bool=True`):
-            Whether to normalize the feature vector.
-        device (`str='cuda'`):
-            Device to load the model.
-        is_training (`bool=False`):
-            Whether to load the model for training.
-
-    Returns:
-        model:
-            ISCNet model.
-        preprocessor:
-            Preprocess function tied to model.
-    """
-    ckpt = torch.load(weight_file_path)
-
-    arch = ckpt["arch"]  # tf_efficientnetv2_m_in21ft1k
-    input_size = ckpt["args"].input_size
-
-    if arch == "tf_efficientnetv2_m_in21ft1k":
-        arch = "timm/tf_efficientnetv2_m.in21k_ft_in1k"
-
-    backbone = timm.create_model(arch, features_only=True)
-    model = ISCNet(
-        backbone=backbone,
-        fc_dim=fc_dim,
-        p=p,
-        eval_p=eval_p,
-        l2_normalize=l2_normalize,
-    )
-
-    model.to(device).train(is_training)
-
-    state_dict = {}
-    for s in ckpt["state_dict"]:
-        state_dict[s.replace("module.", "")] = ckpt["state_dict"][s]
-
-    if fc_dim != 256:
-        # interpolate to new fc_dim
-        state_dict["fc.weight"] = (
-            F.interpolate(
-                state_dict["fc.weight"].permute(1, 0).unsqueeze(0),
-                size=fc_dim,
-                mode="linear",
-                align_corners=False,
-            )
-            .squeeze(0)
-            .permute(1, 0)
-        )
-        for bn_param in ["bn.weight", "bn.bias", "bn.running_mean", "bn.running_var"]:
-            state_dict[bn_param] = (
-                F.interpolate(
-                    state_dict[bn_param].unsqueeze(0).unsqueeze(0),
-                    size=fc_dim,
-                    mode="linear",
-                    align_corners=False,
-                )
-                .squeeze(0)
-                .squeeze(0)
-            )
-
-    model.load_state_dict(state_dict)
-
-    preprocessor = transforms.Compose(
-        [
-            transforms.Resize((input_size, input_size)),
-            transforms.ToTensor(),
-            transforms.Normalize(
-                mean=backbone.default_cfg["mean"],
-                std=backbone.default_cfg["std"],
-            ),
-        ]
-    )
-    
-    return model, preprocessor

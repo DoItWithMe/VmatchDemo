@@ -9,8 +9,10 @@ import argparse
 import torch
 import numpy as np
 
-from models.iscnet import create_isc_model
-from models.imgs_to_feats import gen_img_feats_by_ISCNet
+from models.iscnet_utils import create_isc_model, gen_img_feats_by_ISCNet
+from models.transvcl_utils import create_transvcl_model, query_transVCL
+from models.transform_feats import trans_isc_features_to_transVCL_fromat
+
 from ffmpeg_utils import generate_1fps_imgs
 
 DEVICE_LIST = ["cpu", "cuda"]
@@ -26,6 +28,7 @@ def parser_args():
         default="./assets/ffmpeg",
         required=False,
     )
+
     parser.add_argument(
         "--isc-weight",
         type=str,
@@ -33,10 +36,39 @@ def parser_args():
         default="./assets/models/isc_ft_v107.pth.tar",
         required=False,
     )
+
     parser.add_argument(
-        "--transVCS-weight",
+        "--conf-thre",
+        type=float,
+        default=0.1,
+        help="transVCL: conf threshold of copied segments",
+    )
+
+    parser.add_argument(
+        "--nms-thre",
+        type=float,
+        default=0.3,
+        help="transVCL: nms threshold of copied segments",
+    )
+
+    parser.add_argument(
+        "--img-size",
+        type=int,
+        default=640,
+        help="transVCL: length for copied localization module",
+    )
+
+    parser.add_argument(
+        "--feat-length",
+        type=int,
+        default=1200,
+        help="transVCL: feature length for TransVCL input",
+    )
+
+    parser.add_argument(
+        "--transVCL-weight",
         type=str,
-        help="transVCS   path",
+        help="transVCL weight path",
         default="./assets/models/tarnsVCL_model_1.pth",
         required=False,
     )
@@ -81,41 +113,95 @@ def check_args(args):
 
 
 if __name__ == "__main__":
-    print("hi")
     args = parser_args()
     check_args(args)
 
     device = args.device
-    reference_file_path = args.reference_file_path
+
     ffmpeg_path = args.ffmpeg
+
+    ref_file_path = args.reference_file_path
     sample_file_path = args.sample_file_path
+
     output_dir = args.output_dir
 
     isc_weight_path = args.isc_weight
+    transvcl_weight_path = args.transVCL_weight
 
-    # get 1fps imgs from reference media file and sample media file
-    print(f"start get 1pfs imgs from {reference_file_path}")
-    ref_imgs_dir_path = generate_1fps_imgs(ffmpeg_path, reference_file_path, output_dir)
-    ref_imgs_list = [
-        os.path.join(ref_imgs_dir_path, img_name)
-        for img_name in os.listdir(ref_imgs_dir_path)
-    ]
+    confthre = args.conf_thre
+    nmsthre = args.nms_thre
+    img_size = (args.img_size, args.img_size)
+    feat_max_length = args.feat_length
 
-    print(f"start get 1pfs imgs from {args.sample_file_path}")
-    sample_imgs_dir_path = generate_1fps_imgs(ffmpeg_path, sample_file_path, output_dir)
+    # # get 1fps imgs from reference media file and sample media file
+    # print(f"start get 1pfs imgs from {ref_file_path}")
+    # ref_imgs_dir_path = generate_1fps_imgs(ffmpeg_path, ref_file_path, output_dir)
+    # ref_imgs_list = [
+    #     os.path.join(ref_imgs_dir_path, img_name)
+    #     for img_name in os.listdir(ref_imgs_dir_path)
+    # ]
 
-    sample_imgs_list = [
-        os.path.join(sample_imgs_dir_path, img_name)
-        for img_name in os.listdir(sample_imgs_dir_path)
-    ]
+    # print(f"start get 1pfs imgs from {sample_file_path}")
+    # sample_imgs_dir_path = generate_1fps_imgs(ffmpeg_path, sample_file_path, output_dir)
 
-    print("create isc model")
-    isc_model, isc_processer = create_isc_model(
-        weight_file_path=isc_weight_path, device=device, is_training=False
+    # sample_imgs_list = [
+    #     os.path.join(sample_imgs_dir_path, img_name)
+    #     for img_name in os.listdir(sample_imgs_dir_path)
+    # ]
+
+    # print("create isc model")
+    # isc_model, isc_processer = create_isc_model(
+    #     weight_file_path=isc_weight_path, device=device, is_training=False
+    # )
+
+    # print("gen sample feats")
+    # smaple_feats = gen_img_feats_by_ISCNet(
+    #     sample_imgs_list, isc_model, isc_processer, device
+    # )
+
+    # print("gen ref feats")
+    # ref_feats = gen_img_feats_by_ISCNet(ref_imgs_list, isc_model, isc_processer, device)
+
+    # tmp code
+    sample_feats_path = os.path.join(
+        "/data/jinzijian/assets/vmatch-videos",
+        f"{os.path.splitext(os.path.basename(sample_file_path))[0]}.npy",
     )
 
-    print("gen sample feats")
-    gen_img_feats_by_ISCNet(sample_imgs_list, isc_model, isc_processer, device)
+    ref_feats_path = os.path.join(
+        "/data/jinzijian/assets/vmatch-videos",
+        f"{os.path.splitext(os.path.basename(ref_file_path))[0]}.npy",
+    )
 
-    print("gen ref feats")
-    gen_img_feats_by_ISCNet(ref_imgs_list, isc_model, isc_processer, device)
+    # np.save(sample_feats_path, smaple_feats)
+    # np.save(ref_feats_path, ref_feats)
+
+    print("create transvcl model")
+    transvcl_model = create_transvcl_model(
+        weight_file_path=transvcl_weight_path, device=device, is_training=False
+    )
+
+    print("load isc feats")
+    sample_isc_feats = np.load(sample_feats_path)
+    ref_isc_feats = np.load(ref_feats_path)
+
+    compare_name = (
+        os.path.splitext(os.path.basename(sample_file_path))[0]
+        + os.path.splitext(os.path.basename(ref_file_path))[0]
+    )
+
+    print("trans isc feats to transVCL feature format")
+    transvcl_batch_feats = trans_isc_features_to_transVCL_fromat(
+        sample_isc_feats, ref_isc_feats, compare_name
+    )
+
+    print("query transVCL")
+    query_transVCL(
+        transvcl_model,
+        transvcl_batch_feats,
+        confthre,
+        nmsthre,
+        img_size,
+        feat_max_length,
+        device,
+    )
