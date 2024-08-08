@@ -62,9 +62,8 @@ def trans_isc_features_to_transVCL_fromat(
             sample_mask[: len(sample_list[i])] = True
             ref_mask[: len(ref_list[j])] = True
 
-            feat1_padding = _feat_paddding(torch.tensor(sample_list[i]), 0, feat_length)
-            feat2_padding = _feat_paddding(torch.tensor(ref_list[j]), 0, feat_length)
-
+            sample_feat_padding = _feat_paddding(torch.tensor(sample_list[i]), 0, feat_length)
+            ref_feat_padding = _feat_paddding(torch.tensor(ref_list[j]), 0, feat_length)
             img_info = [
                 torch.tensor([len(sample_list[i])]),
                 torch.tensor([len(ref_list[j])]),
@@ -74,8 +73,8 @@ def trans_isc_features_to_transVCL_fromat(
 
             batch_list.append(
                 (
-                    feat1_padding,
-                    feat2_padding,
+                    sample_feat_padding,
+                    ref_feat_padding,
                     torch.from_numpy(sample_mask),
                     torch.from_numpy(ref_mask),
                     img_info,

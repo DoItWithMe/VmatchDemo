@@ -133,17 +133,16 @@ if __name__ == "__main__":
     img_size = (args.img_size, args.img_size)
     feat_max_length = args.feat_length
 
-    # # get 1fps imgs from reference media file and sample media file
-    # print(f"start get 1pfs imgs from {ref_file_path}")
+    # get 1fps imgs from reference media file and sample media file
+    # print(f"start get 1fps imgs from {ref_file_path}")
     # ref_imgs_dir_path = generate_1fps_imgs(ffmpeg_path, ref_file_path, output_dir)
     # ref_imgs_list = [
     #     os.path.join(ref_imgs_dir_path, img_name)
     #     for img_name in os.listdir(ref_imgs_dir_path)
     # ]
 
-    # print(f"start get 1pfs imgs from {sample_file_path}")
+    # print(f"start get 1fps imgs from {sample_file_path}")
     # sample_imgs_dir_path = generate_1fps_imgs(ffmpeg_path, sample_file_path, output_dir)
-
     # sample_imgs_list = [
     #     os.path.join(sample_imgs_dir_path, img_name)
     #     for img_name in os.listdir(sample_imgs_dir_path)
@@ -154,13 +153,17 @@ if __name__ == "__main__":
     #     weight_file_path=isc_weight_path, device=device, is_training=False
     # )
 
+    # print("gen ref feats")
+    # ref_isc_feats = gen_img_feats_by_ISCNet(
+    #     ref_imgs_list, isc_model, isc_processer, device
+    # )
+    # print(f"get ref feats: {ref_isc_feats.shape}")
+
     # print("gen sample feats")
-    # smaple_feats = gen_img_feats_by_ISCNet(
+    # sample_isc_feats = gen_img_feats_by_ISCNet(
     #     sample_imgs_list, isc_model, isc_processer, device
     # )
-
-    # print("gen ref feats")
-    # ref_feats = gen_img_feats_by_ISCNet(ref_imgs_list, isc_model, isc_processer, device)
+    # print(f"get sample feats: {sample_isc_feats.shape}")
 
     # tmp code
     sample_feats_path = os.path.join(
@@ -173,8 +176,11 @@ if __name__ == "__main__":
         f"{os.path.splitext(os.path.basename(ref_file_path))[0]}.npy",
     )
 
-    # np.save(sample_feats_path, smaple_feats)
-    # np.save(ref_feats_path, ref_feats)
+    # print("save sample feats")
+    # np.save(sample_feats_path, sample_isc_feats)
+
+    # print("save ref feats")
+    # np.save(ref_feats_path, ref_isc_feats)
 
     print("create transvcl model")
     transvcl_model = create_transvcl_model(
@@ -185,8 +191,13 @@ if __name__ == "__main__":
     sample_isc_feats = np.load(sample_feats_path)
     ref_isc_feats = np.load(ref_feats_path)
 
+    print(
+        f"isc feat shape: sample: {sample_isc_feats.shape}, ref: {ref_isc_feats.shape}"
+    )
+
     compare_name = (
         os.path.splitext(os.path.basename(sample_file_path))[0]
+        + "-"
         + os.path.splitext(os.path.basename(ref_file_path))[0]
     )
 
@@ -196,12 +207,15 @@ if __name__ == "__main__":
     )
 
     print("query transVCL")
-    query_transVCL(
+    query_res =  query_transVCL(
         transvcl_model,
         transvcl_batch_feats,
         confthre,
         nmsthre,
         img_size,
         feat_max_length,
+        1000.0,
+        1000.0,
         device,
     )
+    print(f"query_res: {query_res}")

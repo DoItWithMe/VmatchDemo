@@ -43,7 +43,10 @@ def create_isc_model(
         preprocessor:
             Preprocess function tied to model.
     """
-    ckpt = torch.load(weight_file_path)
+    if device == "cuda":
+        ckpt = torch.load(weight_file_path)
+    else:
+        ckpt = torch.load(weight_file_path, map_location="cpu")
 
     arch = ckpt["arch"]  # tf_efficientnetv2_m_in21ft1k
     input_size = ckpt["args"].input_size
@@ -163,5 +166,5 @@ def gen_img_feats_by_ISCNet(
         feats_list.append(img_feat.reshape(-1))
 
     feats_array = np.array(feats_list)
+    print(f"feats_array: {feats_array.shape}")
     return feats_array
-    # print(f"feats_array: {feats_array.shape}")

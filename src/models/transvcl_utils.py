@@ -6,6 +6,20 @@ from .transvcl.yolo_pafpn import YOLOPAFPN
 from .transvcl.yolo_head import YOLOXHead
 from .transvcl.transvcl_model import TransVCL
 from collections import defaultdict
+import math
+import datetime
+
+
+def _milliseconds_to_hhmmss(ms: int):
+    # calculate total seconds
+    total_seconds = ms / 1000.0
+
+    # calculate hour, minute, seconds
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+
+    # format
+    return "{:02}:{:02}:{:02}".format(int(hours), int(minutes), int(seconds))
 
 
 def _postprocess(
@@ -122,7 +136,11 @@ def create_transvcl_model(
 
     model.to(device).train(is_training)
 
-    ckpt = torch.load(weight_file_path)
+    if device == "cuda":
+        ckpt = torch.load(weight_file_path)
+    else:
+        ckpt = torch.load(weight_file_path, map_location="cpu")
+
     model.load_state_dict(ckpt["model"])
 
     if device == "cuda":
@@ -138,6 +156,8 @@ def query_transVCL(
     nmsthre: float,
     img_size: tuple[int, int],
     feat_max_length: int,
+    sample_frame_interval: float,
+    ref_frame_interval: float,
     device: str = "cuda",
 ):
     """
@@ -162,9 +182,22 @@ def query_transVCL(
         feat_max_length (`str`):
             feature length for TransVCL input
 
-        device (`str='cuda'`):
+        sample_frame_interval (`float`):
+            the frame interval(millisecond), sample
+
+        ref_frame_interval(`float`):
+            the frame interval(millisecond), sample
+
+        device (`str="cuda"`):
             Devices for model inference, must be same as the model use.
 
+
+    Returns:
+        result (`defaultdict(list)`):
+        content:
+        result ==>\n
+        {'SampleFileName-RefFileName': [['00:00:00', '00:00:00', '00:02:30', '00:02:30', 0.9887829422950745]]}\n
+        name :[[sample start time, ref start time , samle end time , ref end time, confirm score]\n
     """
     if isinstance(model, nn.DataParallel):
         if not isinstance(model.module, TransVCL):
@@ -175,21 +208,28 @@ def query_transVCL(
 
     batch_feat_result = {}
     for idx, batch_feat in enumerate(transvcl_batch_feats):
-        print(f"start compare {idx}")
-        feat1, feat2, mask1, mask2, img_info, file_name = batch_feat
-        feat1, feat2, mask1, mask2 = (
-            feat1.to(device),
-            feat2.to(device),
-            mask1.to(device),
-            mask2.to(device),
+        sample_feat, ref_feat, mask1, mask2, img_info, file_name = batch_feat
+        sample_feat, ref_feat, mask1, mask2 = (
+            sample_feat.unsqueeze(0).to(device),
+            ref_feat.unsqueeze(0).to(device),
+            mask1.unsqueeze(0).to(device),
+            mask2.unsqueeze(0).to(device),
         )
 
+        file_name = [
+            file_name,
+        ]
+
         print(f"query file: {file_name}")
-        print(f"feat1: {feat1.shape}")
-        print(f"feat2: {feat2.shape}")
+        print(f"sample_feat: {sample_feat.shape}")
+        print(f"ref_feat: {ref_feat.shape}")
+        print(f"mask1: {mask1.shape}")
+        print(f"mask2: {mask2.shape}")
 
         with torch.no_grad():
-            model_outputs = model(feat1, feat2, mask1, mask2, file_name, img_info)
+            model_outputs = model(
+                sample_feat, ref_feat, mask1, mask2, file_name, img_info
+            )
             outputs = _postprocess(
                 model_outputs[1],
                 1,
@@ -217,18 +257,43 @@ def query_transVCL(
     result = defaultdict(list)
 
     for img_name in batch_feat_result:
+        # print(img_name)
         img_file = img_name.split("_")[0]
         # i is sample segment seq
         # j is reference segment seq
         i, j = int(img_name.split("_")[1]), int(img_name.split("_")[2])
         if batch_feat_result[img_name] != [[]]:
             for r in batch_feat_result[img_name]:
+                sample_start_frame = math.floor((r[0] + i * feat_max_length))
+                ref_start_frame = math.floor((r[1] + j * feat_max_length))
+                sample_end_frame = math.ceil((r[2] + i * feat_max_length))
+                ref_end_frame = math.ceil((r[3] + j * feat_max_length))
+
+                print(f"sample_start_frame: {sample_start_frame}")
+                
+                sample_start_timeformat = _milliseconds_to_hhmmss(
+                    sample_start_frame * sample_frame_interval
+                )
+                ref_start_timeformat = _milliseconds_to_hhmmss(
+                    ref_start_frame * ref_frame_interval
+                )
+                sample_end_timeformat = _milliseconds_to_hhmmss(
+                    sample_end_frame * sample_frame_interval
+                )
+                ref_end_timeformat = _milliseconds_to_hhmmss(
+                    ref_end_frame * ref_frame_interval
+                )
+
+                confirm_score = r[4]
+
                 result[img_file].append(
                     [
-                        r[0] + i * feat_max_length,
-                        r[1] + j * feat_max_length,
-                        r[2] + i * feat_max_length,
-                        r[3] + j * feat_max_length,
-                        r[4],
+                        sample_start_timeformat,
+                        ref_start_timeformat,
+                        sample_end_timeformat,
+                        ref_end_timeformat,
+                        confirm_score,
                     ]
                 )
+
+    return result

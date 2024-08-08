@@ -1,6 +1,6 @@
 import numpy as np
 import torch.nn as nn
-from models.iscnet import ISCNet
+from .iscnet.isc_model import ISCNet
 from enum import Enum
 from torchvision.transforms import Compose
 from PIL import Image
@@ -14,7 +14,7 @@ def gen_img_feats_by_ISCNet(
     imgs_path_list: list[str],
     model: nn.Module,
     preprocessor: Compose,
-    device: str = "cuda"
+    device: str = "cuda",
 ):
     """
     Generate image features by ISCNet model
@@ -26,7 +26,7 @@ def gen_img_feats_by_ISCNet(
             ISCNet model
         preprocessor (`Compose`):
             Image preprocessing operations must include converting images into torch.Tensor
-        device (`str='cuda'`):
+        device (`str = "cuda"`):
             Devices for model inference, must be same as the model use.
 
     Returns:
@@ -55,12 +55,10 @@ def gen_img_feats_by_ISCNet(
         # print(f"src shape: {preprocessor(img).shape}, dst shape: {preprocessor(img).unsqueeze(0).shape}")
         img_tensor = preprocessor(img).unsqueeze(0).to(device)
         img_feat = model(img_tensor).detach().cpu().numpy()
-       
+
         # print(f"img feat: { img_feat.shape}, {type( img_feat[0][0])}")
         feats_list.append(img_feat.reshape(-1))
-    
+
     feats_array = np.array(feats_list)
     return feats_array
     # print(f"feats_array: {feats_array.shape}")
-    
-
