@@ -1,12 +1,11 @@
 import subprocess
 import os
 
-# import shutil
 import signal
+from loguru import logger as log
 
-
-def generate_1fps_imgs(
-    ffmpeg_bin_file_path: str, input_file_path: str, output_imgs_dir_path: str
+def generate_imgs(
+    ffmpeg_bin_file_path: str, input_file_path: str, output_imgs_dir_path: str, fps:int
 ) -> str:
     """
     Generate 1fps images from media by FFmpeg
@@ -18,6 +17,8 @@ def generate_1fps_imgs(
             input media file path
         output_imgs_dir_path (`str`):
             output images local store dir
+        fps (`int`):
+            output fps
     
     Returns:
         tmp_output_imgs_dir_path (`str`):
@@ -37,7 +38,7 @@ def generate_1fps_imgs(
     except Exception as e:
         raise ValueError(f"create output dir: {tmp_output_imgs_dir_path} failed for {e}")
 
-    command = f"{ffmpeg_bin_file_path} -i {input_file_path} -loglevel error -nostdin -y -vf fps=1 -start_number 0 -q 0 {tmp_output_imgs_dir_path}/%05d.jpg"
+    command = f"{ffmpeg_bin_file_path} -i {input_file_path} -loglevel error -nostdin -y -vf fps={fps} -start_number 0 -q 0 {tmp_output_imgs_dir_path}/%05d.jpg"
 
     try:
         ffmpeg_p = subprocess.Popen(
@@ -55,7 +56,7 @@ def generate_1fps_imgs(
         # ffmpeg_log_list: list[str] = list()
         # for line in iter(ffmpeg_p.stdout.readline, b""):  # type: ignore
         #     ffmpeg_log_list.append(line)
-            # print(line)
+            # log.info(line)
             
         stdout, _ = ffmpeg_p.communicate()
         if 0 != ffmpeg_p.returncode:

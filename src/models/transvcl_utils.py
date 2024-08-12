@@ -7,7 +7,37 @@ from .transvcl.yolo_head import YOLOXHead
 from .transvcl.transvcl_model import TransVCL
 from collections import defaultdict
 import math
-import datetime
+
+import json
+from typing import Any
+import logging as log
+
+
+class VideoSegment:
+    def __init__(
+        self,
+        sample_start_time: str,
+        sample_end_time: str,
+        ref_start_time: str,
+        ref_end_time: str,
+        score: float,
+    ):
+        self.sample_start_time = sample_start_time
+        self.sample_end_time = sample_end_time
+        self.ref_start_time = ref_start_time
+        self.ref_end_time = ref_end_time
+        self.score = score
+
+    def to_json(self) -> str:
+        return json.dumps(self, default=lambda o: o.__dict__, ensure_ascii=False)
+
+    @classmethod
+    def from_json(cls, json_str: str) -> "VideoSegment":
+        data = json.loads(json_str)
+        return cls(**data)
+
+    def __repr__(self) -> str:
+        return f"VideoSegment(sample: {self.sample_start_time} - {self.sample_end_time}, ref: {self.ref_start_time} - {self.ref_end_time}, score={self.score})"
 
 
 def _milliseconds_to_hhmmss(ms: int):
@@ -23,7 +53,7 @@ def _milliseconds_to_hhmmss(ms: int):
 
 
 def _postprocess(
-    prediction, num_classes, conf_thre=0.7, nms_thre=0.45, class_agnostic=False
+    prediction, num_classes, conf_thre, nms_thre, class_agnostic=False
 ):
     box_corner = prediction.new(prediction.shape)
     box_corner[:, :, 0] = prediction[:, :, 0] - prediction[:, :, 2] / 2
@@ -149,13 +179,13 @@ def create_transvcl_model(
     return model
 
 
-def query_transVCL(
+def gen_match_segments_by_transVCL(
     model: nn.Module,
     transvcl_batch_feats: list[Any],
     confthre: float,
     nmsthre: float,
     img_size: tuple[int, int],
-    feat_max_length: int,
+    segment_length: int,
     sample_frame_interval: float,
     ref_frame_interval: float,
     device: str = "cuda",
@@ -179,8 +209,8 @@ def query_transVCL(
         img_size (`tuple[int, int]`):
             length for copied localization module
 
-        feat_max_length (`str`):
-            feature length for TransVCL input
+        segment_length (`int`):
+            frames number of each segment
 
         sample_frame_interval (`float`):
             the frame interval(millisecond), sample
@@ -220,11 +250,11 @@ def query_transVCL(
             file_name,
         ]
 
-        print(f"query file: {file_name}")
-        print(f"sample_feat: {sample_feat.shape}")
-        print(f"ref_feat: {ref_feat.shape}")
-        print(f"mask1: {mask1.shape}")
-        print(f"mask2: {mask2.shape}")
+        log.info(f"query file: {file_name}")
+        log.info(f"sample_feat: {sample_feat.shape}")
+        log.info(f"ref_feat: {ref_feat.shape}")
+        log.info(f"mask1: {mask1.shape}")
+        log.info(f"mask2: {mask2.shape}")
 
         with torch.no_grad():
             model_outputs = model(
@@ -257,20 +287,20 @@ def query_transVCL(
     result = defaultdict(list)
 
     for img_name in batch_feat_result:
-        # print(img_name)
+        log.info(img_name)
         img_file = img_name.split("_")[0]
         # i is sample segment seq
         # j is reference segment seq
         i, j = int(img_name.split("_")[1]), int(img_name.split("_")[2])
         if batch_feat_result[img_name] != [[]]:
             for r in batch_feat_result[img_name]:
-                sample_start_frame = math.floor((r[0] + i * feat_max_length))
-                ref_start_frame = math.floor((r[1] + j * feat_max_length))
-                sample_end_frame = math.ceil((r[2] + i * feat_max_length))
-                ref_end_frame = math.ceil((r[3] + j * feat_max_length))
+                sample_start_frame = math.floor((r[0] + i * segment_length))
+                ref_start_frame = math.floor((r[1] + j * segment_length))
+                sample_end_frame = math.ceil((r[2] + i * segment_length))
+                ref_end_frame = math.ceil((r[3] + j * segment_length))
 
-                print(f"sample_start_frame: {sample_start_frame}")
-                
+                # log.info(f"sample_start_frame: {sample_start_frame}")
+
                 sample_start_timeformat = _milliseconds_to_hhmmss(
                     sample_start_frame * sample_frame_interval
                 )
@@ -283,17 +313,16 @@ def query_transVCL(
                 ref_end_timeformat = _milliseconds_to_hhmmss(
                     ref_end_frame * ref_frame_interval
                 )
+                confirm_score = round(r[4] * 100.000, 2)
 
-                confirm_score = r[4]
-
-                result[img_file].append(
-                    [
-                        sample_start_timeformat,
-                        ref_start_timeformat,
-                        sample_end_timeformat,
-                        ref_end_timeformat,
-                        confirm_score,
-                    ]
+                video_match_segment = VideoSegment(
+                    sample_start_time=sample_start_timeformat,
+                    sample_end_time=sample_end_timeformat,
+                    ref_start_time=ref_start_timeformat,
+                    ref_end_time=ref_end_timeformat,
+                    score=confirm_score,
                 )
+
+                result[img_file].append(video_match_segment)
 
     return result

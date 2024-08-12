@@ -10,10 +10,11 @@ import torch
 import numpy as np
 
 from models.iscnet_utils import create_isc_model, gen_img_feats_by_ISCNet
-from models.transvcl_utils import create_transvcl_model, query_transVCL
+from models.transvcl_utils import create_transvcl_model, gen_match_segments_by_transVCL
 from models.transform_feats import trans_isc_features_to_transVCL_fromat
+from ffmpeg.ffmpeg_utils import generate_imgs
 
-from ffmpeg_utils import generate_1fps_imgs
+from loguru import logger as log
 
 DEVICE_LIST = ["cpu", "cuda"]
 
@@ -41,7 +42,7 @@ def parser_args():
         "--conf-thre",
         type=float,
         default=0.1,
-        help="transVCL: conf threshold of copied segments",
+        help="transVCL: conf threshold of copied segments    ",
     )
 
     parser.add_argument(
@@ -52,17 +53,17 @@ def parser_args():
     )
 
     parser.add_argument(
+        "--segment-length",
+        type=int,
+        default=1200,
+        help="transVCL: frames number of each compare segment",
+    )
+
+    parser.add_argument(
         "--img-size",
         type=int,
         default=640,
         help="transVCL: length for copied localization module",
-    )
-
-    parser.add_argument(
-        "--feat-length",
-        type=int,
-        default=1200,
-        help="transVCL: feature length for TransVCL input",
     )
 
     parser.add_argument(
@@ -74,6 +75,13 @@ def parser_args():
     )
 
     parser.add_argument("--device", type=str, help="cpu or cuda", default="cuda")
+
+    parser.add_argument(
+        "--fps",
+        type=int,
+        default=1,
+        help="output fps when converting video to images",
+    )
 
     parser.add_argument(
         "--output-dir",
@@ -104,15 +112,22 @@ def parser_args():
 def check_args(args):
     if args.device == "cuda":
         if not torch.cuda.is_available():
-            print("gpu is not available, use cpu")
+            log.info("gpu is not available, use cpu")
             args.device = "cpu"
 
     if args.device not in DEVICE_LIST:
-        print(f"unkown device: {args.device}, only thess is available: {DEVICE_LIST}")
+        log.info(
+            f"unkown device: {args.device}, only thess is available: {DEVICE_LIST}"
+        )
         exit(-1)
 
 
+def init_log():
+    log.remove()
+    log.add(sys.stdout, format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {name}:{line} | {message}")
+
 if __name__ == "__main__":
+    init_log()
     args = parser_args()
     check_args(args)
 
@@ -131,39 +146,40 @@ if __name__ == "__main__":
     confthre = args.conf_thre
     nmsthre = args.nms_thre
     img_size = (args.img_size, args.img_size)
-    feat_max_length = args.feat_length
+    segment_length = args.segment_length
+    fps = args.fps
 
     # get 1fps imgs from reference media file and sample media file
-    # print(f"start get 1fps imgs from {ref_file_path}")
-    # ref_imgs_dir_path = generate_1fps_imgs(ffmpeg_path, ref_file_path, output_dir)
+    # log.info(f"start get 1fps imgs from {ref_file_path}")
+    # ref_imgs_dir_path = generate_imgs(ffmpeg_path, ref_file_path, output_dir, fps)
     # ref_imgs_list = [
     #     os.path.join(ref_imgs_dir_path, img_name)
     #     for img_name in os.listdir(ref_imgs_dir_path)
     # ]
 
-    # print(f"start get 1fps imgs from {sample_file_path}")
-    # sample_imgs_dir_path = generate_1fps_imgs(ffmpeg_path, sample_file_path, output_dir)
+    # log.info(f"start get 1fps imgs from {sample_file_path}")
+    # sample_imgs_dir_path = generate_imgs(ffmpeg_path, sample_file_path, output_dir, fps)
     # sample_imgs_list = [
     #     os.path.join(sample_imgs_dir_path, img_name)
     #     for img_name in os.listdir(sample_imgs_dir_path)
     # ]
 
-    # print("create isc model")
+    # log.info("create isc model")
     # isc_model, isc_processer = create_isc_model(
     #     weight_file_path=isc_weight_path, device=device, is_training=False
     # )
 
-    # print("gen ref feats")
+    # log.info("gen ref feats")
     # ref_isc_feats = gen_img_feats_by_ISCNet(
     #     ref_imgs_list, isc_model, isc_processer, device
     # )
-    # print(f"get ref feats: {ref_isc_feats.shape}")
+    # log.info(f"get ref feats: {ref_isc_feats.shape}")
 
-    # print("gen sample feats")
+    # log.info("gen sample feats")
     # sample_isc_feats = gen_img_feats_by_ISCNet(
     #     sample_imgs_list, isc_model, isc_processer, device
     # )
-    # print(f"get sample feats: {sample_isc_feats.shape}")
+    # log.info(f"get sample feats: {sample_isc_feats.shape}")
 
     # tmp code
     sample_feats_path = os.path.join(
@@ -176,22 +192,22 @@ if __name__ == "__main__":
         f"{os.path.splitext(os.path.basename(ref_file_path))[0]}.npy",
     )
 
-    # print("save sample feats")
+    # log.info("save sample feats")
     # np.save(sample_feats_path, sample_isc_feats)
 
-    # print("save ref feats")
+    # log.info("save ref feats")
     # np.save(ref_feats_path, ref_isc_feats)
 
-    print("create transvcl model")
+    log.info("create transvcl model")
     transvcl_model = create_transvcl_model(
         weight_file_path=transvcl_weight_path, device=device, is_training=False
     )
 
-    print("load isc feats")
+    log.info("load isc feats")
     sample_isc_feats = np.load(sample_feats_path)
     ref_isc_feats = np.load(ref_feats_path)
 
-    print(
+    log.info(
         f"isc feat shape: sample: {sample_isc_feats.shape}, ref: {ref_isc_feats.shape}"
     )
 
@@ -201,21 +217,22 @@ if __name__ == "__main__":
         + os.path.splitext(os.path.basename(ref_file_path))[0]
     )
 
-    print("trans isc feats to transVCL feature format")
+    log.info("trans isc feats to transVCL feature format")
     transvcl_batch_feats = trans_isc_features_to_transVCL_fromat(
-        sample_isc_feats, ref_isc_feats, compare_name
+        sample_isc_feats, ref_isc_feats, compare_name, segment_length
     )
 
-    print("query transVCL")
-    query_res =  query_transVCL(
+    log.info("query transVCL")
+    matched_segments = gen_match_segments_by_transVCL(
         transvcl_model,
         transvcl_batch_feats,
         confthre,
         nmsthre,
         img_size,
-        feat_max_length,
+        segment_length,
         1000.0,
         1000.0,
         device,
     )
-    print(f"query_res: {query_res}")
+    for matched_seg_title in matched_segments:
+        log.info(f"matched_segments: {matched_segments[matched_seg_title]}")

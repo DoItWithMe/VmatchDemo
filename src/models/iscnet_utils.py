@@ -7,7 +7,7 @@ import torch.nn.functional as F
 from .iscnet.isc_model import ISCNet
 from torchvision import transforms
 from PIL import Image
-
+from loguru import logger as log
 
 def create_isc_model(
     weight_file_path: str,
@@ -50,6 +50,7 @@ def create_isc_model(
 
     arch = ckpt["arch"]  # tf_efficientnetv2_m_in21ft1k
     input_size = ckpt["args"].input_size
+    log.info(f"IscNet input_size: {input_size}")
 
     if arch == "tf_efficientnetv2_m_in21ft1k":
         arch = "timm/tf_efficientnetv2_m.in21k_ft_in1k"
@@ -142,7 +143,7 @@ def gen_img_feats_by_ISCNet(
         image = Image.open(requests.get(url, stream=True).raw)\n
         x = preprocessor(image).unsqueeze(0)\n
         y = model(x)\n
-        print(y.shape)  # => torch.Size([1, 256])\n
+        log.info(y.shape)  # => torch.Size([1, 256])\n
     """
     if isinstance(model, nn.DataParallel):
         if not isinstance(model.module, ISCNet):
@@ -158,13 +159,13 @@ def gen_img_feats_by_ISCNet(
     feats_list = list()
     for img_path in imgs_path_list:
         img = Image.open(img_path)
-        # print(f"src shape: {preprocessor(img).shape}, dst shape: {preprocessor(img).unsqueeze(0).shape}")
+        # log.info(f"src shape: {preprocessor(img).shape}, dst shape: {preprocessor(img).unsqueeze(0).shape}")
         img_tensor = preprocessor(img).unsqueeze(0).to(device)
         img_feat = model(img_tensor).detach().cpu().numpy()
 
-        # print(f"img feat: { img_feat.shape}, {type( img_feat[0][0])}")
+        # log.info(f"img feat: { img_feat.shape}, {type( img_feat[0][0])}")
         feats_list.append(img_feat.reshape(-1))
 
     feats_array = np.array(feats_list)
-    print(f"feats_array: {feats_array.shape}")
+    log.info(f"feats_array: {feats_array.shape}")
     return feats_array

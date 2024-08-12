@@ -9,15 +9,14 @@ from torch.autograd import Variable
 from .linear_attention import LinearAttention, FullAttention
 import numpy as np
 import cv2
+from loguru import logger as log
 
 
 INF = 1e9
 
+
 class EncoderLayer(nn.Module):
-    def __init__(self,
-                 d_model,
-                 nhead,
-                 attention='linear'):
+    def __init__(self, d_model, nhead, attention="linear"):
         super(EncoderLayer, self).__init__()
 
         self.dim = d_model // nhead
@@ -27,14 +26,14 @@ class EncoderLayer(nn.Module):
         self.q_proj = nn.Linear(d_model, d_model, bias=False)
         self.k_proj = nn.Linear(d_model, d_model, bias=False)
         self.v_proj = nn.Linear(d_model, d_model, bias=False)
-        self.attention = LinearAttention() if attention == 'linear' else FullAttention()
+        self.attention = LinearAttention() if attention == "linear" else FullAttention()
         self.merge = nn.Linear(d_model, d_model, bias=False)
 
         # feed-forward network
         self.mlp = nn.Sequential(
-            nn.Linear(d_model*2, d_model*2, bias=False),
+            nn.Linear(d_model * 2, d_model * 2, bias=False),
             nn.ReLU(True),
-            nn.Linear(d_model*2, d_model, bias=False),
+            nn.Linear(d_model * 2, d_model, bias=False),
         )
 
         # norm and dropout
@@ -55,11 +54,13 @@ class EncoderLayer(nn.Module):
         # multi-head attention
         query = self.q_proj(query)
         key = self.k_proj(key)
-        query = query.view(bs, -1, self.nhead, self.dim) # [N, L, (H, D)]
-        key = key.view(bs, -1, self.nhead, self.dim) # [N, S, (H, D)]
+        query = query.view(bs, -1, self.nhead, self.dim)  # [N, L, (H, D)]
+        key = key.view(bs, -1, self.nhead, self.dim)  # [N, S, (H, D)]
         value = self.v_proj(value).view(bs, -1, self.nhead, self.dim)
-        message = self.attention(query, key, value, q_mask=x_mask, kv_mask=source_mask)  # [N, L, (H, D)]
-        message = self.merge(message.view(bs, -1, self.nhead*self.dim))  # [N, L, C]
+        message = self.attention(
+            query, key, value, q_mask=x_mask, kv_mask=source_mask
+        )  # [N, L, (H, D)]
+        message = self.merge(message.view(bs, -1, self.nhead * self.dim))  # [N, L, C]
         message = self.norm1(message)
 
         # feed-forward network
@@ -68,8 +69,10 @@ class EncoderLayer(nn.Module):
 
         return x + message
 
+
 class PositionalEncoding(nn.Module):
     "Implement the PE function."
+
     def __init__(self, d_model, dropout=0.5, max_len=1200):
         super(PositionalEncoding, self).__init__()
         self.dropout = nn.Dropout(p=dropout)
@@ -77,19 +80,21 @@ class PositionalEncoding(nn.Module):
         # Compute the positional encodings once in log space.
         pe = torch.zeros(max_len, d_model)
         position = torch.arange(0, max_len).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, d_model, 2).float() *
-                             (-math.log(10000.0) / d_model))
+        div_term = torch.exp(
+            torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model)
+        )
         pe[:, 0::2] = torch.sin(position * div_term)
         pe[:, 1::2] = torch.cos(position * div_term)
-        self.register_buffer('pe', pe.unsqueeze(0), persistent=False)
+        self.register_buffer("pe", pe.unsqueeze(0), persistent=False)
 
     def forward(self, x):
         """
-            Args:
-                x (torch.Tensor): [N, L, C]
-            """
+        Args:
+            x (torch.Tensor): [N, L, C]
+        """
         _, _, d = x.shape
-        return x + d ** -0.5 * self.pe[:, :x.size(1)]
+        return x + d**-0.5 * self.pe[:, : x.size(1)]
+
 
 class FeatureTransformer(nn.Module):
     """Feature Transformer module."""
@@ -98,11 +103,15 @@ class FeatureTransformer(nn.Module):
         super(FeatureTransformer, self).__init__()
 
         self.config = config
-        self.d_model = config['d_model']
-        self.nhead = config['nhead']
-        self.layer_names = config['layer_names']
-        encoder_layer = EncoderLayer(config['d_model'], config['nhead'], config['attention'])
-        self.layers = nn.ModuleList([copy.deepcopy(encoder_layer) for _ in range(len(self.layer_names))])
+        self.d_model = config["d_model"]
+        self.nhead = config["nhead"]
+        self.layer_names = config["layer_names"]
+        encoder_layer = EncoderLayer(
+            config["d_model"], config["nhead"], config["attention"]
+        )
+        self.layers = nn.ModuleList(
+            [copy.deepcopy(encoder_layer) for _ in range(len(self.layer_names))]
+        )
         self.cls_token = nn.Parameter(torch.randn(1, 1, self.d_model))
         self._reset_parameters()
 
@@ -126,19 +135,20 @@ class FeatureTransformer(nn.Module):
             cls_token_1 = self.cls_token.repeat(N, 1, 1)
             feat0 = torch.cat((cls_token_0, feat0), dim=1)
             feat1 = torch.cat((cls_token_1, feat1), dim=1)
-            mask0 = torch.cat((torch.tensor([1]).repeat(N, 1).to(mask0.device), mask0), dim=1)
-            mask1 = torch.cat((torch.tensor([1]).repeat(N, 1).to(mask1.device), mask1), dim=1)
+            mask0 = torch.cat((torch.tensor([1]).repeat(N, 1).to(mask0.device), mask0), dim=1)  # type: ignore
+            mask1 = torch.cat((torch.tensor([1]).repeat(N, 1).to(mask1.device), mask1), dim=1)  # type: ignore
         for layer, name in zip(self.layers, self.layer_names):
-            if name == 'self':
-                feat0 = layer(feat0, feat0, mask0, mask0, file[0] + '_self_feat0')
-                feat1 = layer(feat1, feat1, mask1, mask1, file[0] + '_self_feat1')
-            elif name == 'cross':
-                feat0 = layer(feat0, feat1, mask0, mask1, file[0] + '_cross_feat0')
-                feat1 = layer(feat1, feat0, mask1, mask0, file[0] + '_cross_feat1')
+            if name == "self":
+                feat0 = layer(feat0, feat0, mask0, mask0, file[0] + "_self_feat0")  # type: ignore
+                feat1 = layer(feat1, feat1, mask1, mask1, file[0] + "_self_feat1")  # type: ignore
+            elif name == "cross":
+                feat0 = layer(feat0, feat1, mask0, mask1, file[0] + "_cross_feat0")  # type: ignore
+                feat1 = layer(feat1, feat0, mask1, mask0, file[0] + "_cross_feat1")  # type: ignore
             else:
                 raise KeyError
 
         return feat0, feat1
+
 
 class SimMapGen(nn.Module):
     def __init__(self, config):
@@ -146,19 +156,20 @@ class SimMapGen(nn.Module):
         self.config = config
 
         # we provide 2 options for differentiable matching
-        self.match_type = config['match_type']
-        if self.match_type == 'dual_softmax':
-            self.temperature = config['dsmax_temperature']
-        elif self.match_type == 'sinkhorn':
+        self.match_type = config["match_type"]
+        if self.match_type == "dual_softmax":
+            self.temperature = config["dsmax_temperature"]
+        elif self.match_type == "sinkhorn":
             try:
-                from .superglue import log_optimal_transport
+                from .superglue import log_optimal_transport  # type: ignore
             except ImportError:
                 raise ImportError("download superglue.py first!")
             self.log_optimal_transport = log_optimal_transport
             self.bin_score = nn.Parameter(
-                torch.tensor(config['skh_init_bin_score'], requires_grad=True))
-            self.skh_iters = config['skh_iters']
-            self.skh_prefilter = config['skh_prefilter']
+                torch.tensor(config["skh_init_bin_score"], requires_grad=True)
+            )
+            self.skh_iters = config["skh_iters"]
+            self.skh_prefilter = config["skh_prefilter"]
         else:
             raise NotImplementedError()
 
@@ -175,32 +186,38 @@ class SimMapGen(nn.Module):
         N, L, S, C = feat_c0.size(0), feat_c0.size(1), feat_c1.size(1), feat_c0.size(2)
 
         # normalize
-        feat_c0, feat_c1 = map(lambda feat: feat / feat.shape[-1]**.5,
-                               [feat_c0, feat_c1])
+        feat_c0, feat_c1 = map(
+            lambda feat: feat / feat.shape[-1] ** 0.5, [feat_c0, feat_c1]
+        )
 
-        if self.match_type == 'dual_softmax':
-            sim_matrix = torch.einsum("nlc,nsc->nls", feat_c0,
-                                      feat_c1) / self.temperature
+        if self.match_type == "dual_softmax":
+            sim_matrix = (
+                torch.einsum("nlc,nsc->nls", feat_c0, feat_c1) / self.temperature
+            )
             if mask_c0 is not None:
                 sim_matrix.masked_fill_(
-                    ~(mask_c0[..., None] * mask_c1[:, None]).bool(),
-                    0)
+                    ~(mask_c0[..., None] * mask_c1[:, None]).bool(), 0  # type: ignore
+                )
             # if mask_c0 is not None:
             #     sim_matrix = torch.where((mask_c0.long()[..., None] * mask_c1.long()[:, None]).bool(), sim_matrix, torch.tensor([0.]))
             conf_matrix = F.softmax(sim_matrix, 1) * F.softmax(sim_matrix, 2)
 
         else:
-            assert self.match_type == 'sinkhorn', f'match type {self.match_type} is neither sinkhorn nor dual_softmax'
+            assert (
+                self.match_type == "sinkhorn"
+            ), f"match type {self.match_type} is neither sinkhorn nor dual_softmax"
             # sinkhorn, dustbin included
             sim_matrix = torch.einsum("nlc,nsc->nls", feat_c0, feat_c1)
             if mask_c0 is not None:
                 sim_matrix[:, :L, :S].masked_fill_(
-                    ~(mask_c0[..., None] * mask_c1[:, None]).bool(),
-                    -INF)
+                    ~(mask_c0[..., None] * mask_c1[:, None]).bool(),  # type: ignore
+                    -INF,
+                )
 
             # build uniform prior & use sinkhorn
             log_assign_matrix = self.log_optimal_transport(
-                sim_matrix, self.bin_score, self.skh_iters)
+                sim_matrix, self.bin_score, self.skh_iters
+            )
             assign_matrix = log_assign_matrix.exp()
             conf_matrix = assign_matrix[:, :-1, :-1]
 
