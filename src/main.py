@@ -4,7 +4,6 @@ import os
 _project_dipath: str = os.path.dirname((os.path.abspath(__file__)))
 sys.path.append(_project_dipath)
 
-
 import argparse
 import torch
 import numpy as np
@@ -17,6 +16,7 @@ from ffmpeg.ffmpeg_utils import generate_imgs
 from loguru import logger as log
 
 DEVICE_LIST = ["cpu", "cuda"]
+MIN_SEGMENT_LENGTH = 100
 
 
 def parser_args():
@@ -41,7 +41,7 @@ def parser_args():
     parser.add_argument(
         "--conf-thre",
         type=float,
-        default=0.1,
+        default=0.6,
         help="transVCL: conf threshold of copied segments    ",
     )
 
@@ -53,17 +53,24 @@ def parser_args():
     )
 
     parser.add_argument(
-        "--segment-length",
-        type=int,
-        default=1200,
-        help="transVCL: frames number of each compare segment",
-    )
-
-    parser.add_argument(
         "--img-size",
         type=int,
         default=640,
         help="transVCL: length for copied localization module",
+    )
+
+    parser.add_argument(
+        "--fps",
+        type=int,
+        default=1,
+        help="output fps when converting video to images",
+    )
+
+    parser.add_argument(
+        "--segment-duration",
+        type=int,
+        default=200,
+        help="transVCL: segment duration in milliseconds",
     )
 
     parser.add_argument(
@@ -75,13 +82,6 @@ def parser_args():
     )
 
     parser.add_argument("--device", type=str, help="cpu or cuda", default="cuda")
-
-    parser.add_argument(
-        "--fps",
-        type=int,
-        default=1,
-        help="output fps when converting video to images",
-    )
 
     parser.add_argument(
         "--output-dir",
@@ -98,6 +98,7 @@ def parser_args():
         help="input sample media file path",
         required=True,
     )
+
     parser.add_argument(
         "--reference-file-path",
         "-r",
@@ -112,21 +113,30 @@ def parser_args():
 def check_args(args):
     if args.device == "cuda":
         if not torch.cuda.is_available():
-            log.info("gpu is not available, use cpu")
+            log.warning("gpu is not available, use cpu")
             args.device = "cpu"
 
     if args.device not in DEVICE_LIST:
-        log.info(
+        log.error(
             f"unkown device: {args.device}, only thess is available: {DEVICE_LIST}"
         )
+        exit(-1)
+
+    if args.segment_duration < MIN_SEGMENT_LENGTH:
+        log.error(f"segment duration can not smaller than {MIN_SEGMENT_LENGTH}")
         exit(-1)
 
 
 def init_log():
     log.remove()
-    log.add(sys.stdout, format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {name}:{line} | {message}")
+    log.add(
+        sys.stdout,
+        format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {name}:{line} | {message}",
+    )
+
 
 if __name__ == "__main__":
+    # torch.set_num_threads(16)
     init_log()
     args = parser_args()
     check_args(args)
@@ -146,40 +156,54 @@ if __name__ == "__main__":
     confthre = args.conf_thre
     nmsthre = args.nms_thre
     img_size = (args.img_size, args.img_size)
-    segment_length = args.segment_length
+
+    segment_duration: int = args.segment_duration
+
     fps = args.fps
+    frame_interval = 1000.0 / float(fps)
 
-    # get 1fps imgs from reference media file and sample media file
-    # log.info(f"start get 1fps imgs from {ref_file_path}")
-    # ref_imgs_dir_path = generate_imgs(ffmpeg_path, ref_file_path, output_dir, fps)
-    # ref_imgs_list = [
-    #     os.path.join(ref_imgs_dir_path, img_name)
-    #     for img_name in os.listdir(ref_imgs_dir_path)
-    # ]
+    if frame_interval > segment_duration:
+        log.warning(
+            f"fps is {fps}, frame interval {frame_interval} ms is bigger than segment duration: {segment_duration} ms"
+        )
+        segment_duration = round(frame_interval * 10)
+        log.warning(f"segment duration reset to {segment_duration} ms")
 
-    # log.info(f"start get 1fps imgs from {sample_file_path}")
-    # sample_imgs_dir_path = generate_imgs(ffmpeg_path, sample_file_path, output_dir, fps)
-    # sample_imgs_list = [
-    #     os.path.join(sample_imgs_dir_path, img_name)
-    #     for img_name in os.listdir(sample_imgs_dir_path)
-    # ]
+    segment_length = round(segment_duration / frame_interval)
+    log.info(f"segment_length: {segment_length} segment_duration: {segment_duration}, frame_interval: {frame_interval}")
 
-    # log.info("create isc model")
-    # isc_model, isc_processer = create_isc_model(
-    #     weight_file_path=isc_weight_path, device=device, is_training=False
-    # )
+    # get imgs from reference media file and sample media file
+    log.info(f"start get imgs from {ref_file_path}, img fps: {fps}")
+    ref_imgs_dir_path = generate_imgs(ffmpeg_path, ref_file_path, output_dir, fps)
+    ref_imgs_list = [
+        os.path.join(ref_imgs_dir_path, img_name)
+        for img_name in os.listdir(ref_imgs_dir_path)
+    ]
 
-    # log.info("gen ref feats")
-    # ref_isc_feats = gen_img_feats_by_ISCNet(
-    #     ref_imgs_list, isc_model, isc_processer, device
-    # )
-    # log.info(f"get ref feats: {ref_isc_feats.shape}")
+    log.info(f"start get imgs from {sample_file_path}, img fps: {fps}")
+    sample_imgs_dir_path = generate_imgs(ffmpeg_path, sample_file_path, output_dir, fps)
+    sample_imgs_list = [
+        os.path.join(sample_imgs_dir_path, img_name)
+        for img_name in os.listdir(sample_imgs_dir_path)
+    ]
 
-    # log.info("gen sample feats")
-    # sample_isc_feats = gen_img_feats_by_ISCNet(
-    #     sample_imgs_list, isc_model, isc_processer, device
-    # )
-    # log.info(f"get sample feats: {sample_isc_feats.shape}")
+    log.info("create isc model")
+    isc_model, isc_processer = create_isc_model(
+        weight_file_path=isc_weight_path, device=device, is_training=False
+    )
+
+    log.info(f"gen ref feats, ref imgs len: {len(ref_imgs_list)}")
+    # it's very slow when use cpu to generate image feats....
+    ref_isc_feats = gen_img_feats_by_ISCNet(
+        ref_imgs_list, isc_model, isc_processer, device
+    )
+    log.info(f"get ref feats: {ref_isc_feats.shape}")
+
+    log.info(f"gen sample feats, sample imgs len: {len(sample_imgs_list)}")
+    sample_isc_feats = gen_img_feats_by_ISCNet(
+        sample_imgs_list, isc_model, isc_processer, device
+    )
+    log.info(f"get sample feats: {sample_isc_feats.shape}")
 
     # tmp code
     sample_feats_path = os.path.join(
@@ -192,11 +216,11 @@ if __name__ == "__main__":
         f"{os.path.splitext(os.path.basename(ref_file_path))[0]}.npy",
     )
 
-    # log.info("save sample feats")
-    # np.save(sample_feats_path, sample_isc_feats)
+    log.info("save sample feats")
+    np.save(sample_feats_path, sample_isc_feats)
 
-    # log.info("save ref feats")
-    # np.save(ref_feats_path, ref_isc_feats)
+    log.info("save ref feats")
+    np.save(ref_feats_path, ref_isc_feats)
 
     log.info("create transvcl model")
     transvcl_model = create_transvcl_model(
@@ -230,8 +254,8 @@ if __name__ == "__main__":
         nmsthre,
         img_size,
         segment_length,
-        1000.0,
-        1000.0,
+        frame_interval,
+        frame_interval,
         device,
     )
     for matched_seg_title in matched_segments:

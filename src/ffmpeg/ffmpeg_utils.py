@@ -1,5 +1,6 @@
 import subprocess
 import os
+import shutil
 
 import signal
 from loguru import logger as log
@@ -34,6 +35,7 @@ def generate_imgs(
         tmp_output_imgs_dir_path:str = os.path.join(
             output_imgs_dir_path, f"{os.path.splitext(os.path.basename(input_file_path))[0]}_imgs"
         )
+        shutil.rmtree(tmp_output_imgs_dir_path, ignore_errors=True)
         os.makedirs(tmp_output_imgs_dir_path, exist_ok=True)
     except Exception as e:
         raise ValueError(f"create output dir: {tmp_output_imgs_dir_path} failed for {e}")
