@@ -33,7 +33,7 @@ def generate_imgs(
         raise ValueError("input file not exists")
     try:
         tmp_output_imgs_dir_path:str = os.path.join(
-            output_imgs_dir_path, f"{os.path.splitext(os.path.basename(input_file_path))[0]}_imgs"
+            output_imgs_dir_path, f"{os.path.splitext(os.path.basename(input_file_path))[0]}"
         )
         shutil.rmtree(tmp_output_imgs_dir_path, ignore_errors=True)
         os.makedirs(tmp_output_imgs_dir_path, exist_ok=True)
