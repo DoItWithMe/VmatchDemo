@@ -1,43 +1,25 @@
 import torch
 import torchvision
 import torch.nn as nn
+import json
+import math
+from loguru import logger as log
+
 from typing import Any
 from .transvcl.yolo_pafpn import YOLOPAFPN
 from .transvcl.yolo_head import YOLOXHead
 from .transvcl.transvcl_model import TransVCL
 from collections import defaultdict
-import math
-
-import json
-from typing import Any
-import logging as log
 
 
-class VideoSegment:
-    def __init__(
-        self,
-        sample_start_time: str,
-        sample_end_time: str,
-        ref_start_time: str,
-        ref_end_time: str,
-        score: float,
-    ):
-        self.sample_start_time = sample_start_time
-        self.sample_end_time = sample_end_time
-        self.ref_start_time = ref_start_time
-        self.ref_end_time = ref_end_time
-        self.score = score
+def _hhmmss_to_milliseconds(hhmmss: str) -> int:
+    # Split the input string by ':'
+    hours, minutes, seconds = map(int, hhmmss.split(":"))
 
-    def to_json(self) -> str:
-        return json.dumps(self, default=lambda o: o.__dict__, ensure_ascii=False)
+    # Convert everything to milliseconds
+    total_milliseconds = (hours * 3600 + minutes * 60 + seconds) * 1000
 
-    @classmethod
-    def from_json(cls, json_str: str) -> "VideoSegment":
-        data = json.loads(json_str)
-        return cls(**data)
-
-    def __repr__(self) -> str:
-        return f"VideoSegment(sample: {self.sample_start_time} - {self.sample_end_time}, ref: {self.ref_start_time} - {self.ref_end_time}, score={self.score})"
+    return total_milliseconds
 
 
 def _milliseconds_to_hhmmss(ms: int):
@@ -52,9 +34,69 @@ def _milliseconds_to_hhmmss(ms: int):
     return "{:02}:{:02}:{:02}".format(int(hours), int(minutes), int(seconds))
 
 
-def _postprocess(
-    prediction, num_classes, conf_thre, nms_thre, class_agnostic=False
-):
+class VideoSegment:
+    def __init__(
+        self,
+        sample_start_time: str,
+        sample_end_time: str,
+        ref_start_time: str,
+        ref_end_time: str,
+        score: float,
+        ref_title: str,
+        sample_title: str,
+        sample_seg_id: int,
+        ref_seg_id: int,
+        sample_start_frame: int,
+        sample_end_frame: int,
+        ref_start_frame: int,
+        ref_end_frame: int,
+    ):
+        self.sample_title = sample_title
+        self.sample_seg_id = sample_seg_id
+        self.sample_start_time = sample_start_time
+        self.sample_end_time = sample_end_time
+        self.sample_start_frame = sample_start_frame
+        self.sample_end_frame = sample_end_frame
+
+        self.ref_title = ref_title
+        self.ref_seg_id = ref_seg_id
+        self.ref_start_time = ref_start_time
+        self.ref_end_time = ref_end_time
+        self.ref_start_frame = ref_start_frame
+        self.ref_end_frame = ref_end_frame
+
+        self.score = score
+        self.next_video_segment: Any = None
+        self.choiced: bool = False
+
+    def to_json(self) -> str:
+        return json.dumps(self, default=lambda o: o.__dict__, ensure_ascii=False)
+
+    @classmethod
+    def from_json(cls, json_str: str) -> "VideoSegment":
+        data = json.loads(json_str)
+        return cls(**data)
+
+    def __repr__(self) -> str:
+        info = f"VideoSegment("
+        info += f"sample {self.sample_title} | seg {self.sample_seg_id} | {self.sample_start_time} - {self.sample_end_time} | {self.sample_start_frame} -- {self.sample_end_frame}, "
+        info += f"ref {self.ref_title} | seg {self.ref_seg_id} | {self.ref_start_time} - {self.ref_end_time} | {self.ref_start_frame} -- {self.ref_end_frame}, "
+        info += f"score={self.score}"
+        info += f")"
+        return info
+
+    def get_sample_len(self):
+        return _hhmmss_to_milliseconds(self.sample_end_time) - _hhmmss_to_milliseconds(
+            self.sample_start_time
+        )
+
+    def get_ref_len(self):
+        return _hhmmss_to_milliseconds(self.ref_end_time) - _hhmmss_to_milliseconds(
+            self.ref_start_time
+        )
+
+
+def _postprocess(prediction, num_classes, conf_thre, nms_thre, class_agnostic=False):
     box_corner = prediction.new(prediction.shape)
     box_corner[:, :, 0] = prediction[:, :, 0] - prediction[:, :, 2] / 2
     box_corner[:, :, 1] = prediction[:, :, 1] - prediction[:, :, 3] / 2
@@ -227,7 +269,7 @@ def gen_match_segments_by_transVCL(
         content:
         result ==>\n
         {'SampleFileName-RefFileName': [['00:00:00', '00:00:00', '00:02:30', '00:02:30', 0.9887829422950745]]}\n
-        name :[[sample start time, ref start time , samle end time , ref end time, confirm score]\n
+        titile :[[sample start time, ref start time , samle end time , ref end time, confirm score]\n
     """
     if isinstance(model, nn.DataParallel):
         if not isinstance(model.module, TransVCL):
@@ -236,9 +278,21 @@ def gen_match_segments_by_transVCL(
         if not isinstance(model, TransVCL):
             raise RuntimeError(f"unknown model: {type(model)}")
 
-    batch_feat_result = {}
+    # batch_feat_result: dict[str, list[Any]] = {}
+    outputs_list = list()
+
     for idx, batch_feat in enumerate(transvcl_batch_feats):
-        sample_feat, ref_feat, mask1, mask2, img_info, file_name = batch_feat
+        (
+            sample_feat,
+            ref_feat,
+            mask1,
+            mask2,
+            img_info,
+            title,
+            sample_seg_id,
+            ref_seg_id,
+        ) = batch_feat
+
         sample_feat, ref_feat, mask1, mask2 = (
             sample_feat.unsqueeze(0).to(device),
             ref_feat.unsqueeze(0).to(device),
@@ -246,20 +300,24 @@ def gen_match_segments_by_transVCL(
             mask2.unsqueeze(0).to(device),
         )
 
-        file_name = [
-            file_name,
-        ]
-
-        log.info(f"query file: {file_name}")
-        log.info(f"sample_feat: {sample_feat.shape}")
-        log.info(f"ref_feat: {ref_feat.shape}")
-        log.info(f"mask1: {mask1.shape}")
-        log.info(f"mask2: {mask2.shape}")
+        # log.info(f"query file: {title}")
+        # log.info(f"sample_feat: {sample_feat.shape}")
+        # log.info(f"ref_feat: {ref_feat.shape}")
+        # log.info(f"mask1: {mask1.shape}")
+        # log.info(f"mask2: {mask2.shape}")
 
         with torch.no_grad():
             model_outputs = model(
-                sample_feat, ref_feat, mask1, mask2, file_name, img_info
+                sample_feat,
+                ref_feat,
+                mask1,
+                mask2,
+                [
+                    title,
+                ],
+                img_info,
             )
+
             outputs = _postprocess(
                 model_outputs[1],
                 1,
@@ -268,7 +326,11 @@ def gen_match_segments_by_transVCL(
                 class_agnostic=True,
             )
 
-            for idx, output in enumerate(outputs):
+            # log.info(
+            #     f"title: {title}, sample seg id: {sample_seg_id}, ref seg id: {ref_seg_id}, outputs: {len(outputs)}"
+            # )
+
+            for idx2, output in enumerate(outputs):
                 if output is not None:
                     bboxes = output[:, :5].cpu()
 
@@ -276,53 +338,68 @@ def gen_match_segments_by_transVCL(
                         img_info[0] / img_size[0],
                         img_info[1] / img_size[1],
                     )
-                    bboxes[:, 0:4:2] *= scale2[idx]
-                    bboxes[:, 1:4:2] *= scale1[idx]
-                    batch_feat_result[file_name[idx]] = bboxes[
-                        :, (1, 0, 3, 2, 4)
-                    ].tolist()
-                else:
-                    batch_feat_result[file_name[idx]] = [[]]
+                    bboxes[:, 0:4:2] *= scale2[idx2]
+                    bboxes[:, 1:4:2] *= scale1[idx2]
+                    outputs_list.append(
+                        [
+                            title,
+                            sample_seg_id,
+                            ref_seg_id,
+                            bboxes[:, (1, 0, 3, 2, 4)].tolist(),
+                        ]
+                    )
 
-    result = defaultdict(list)
+    # result = defaultdict(list)
 
-    for img_name in batch_feat_result:
-        log.info(img_name)
-        img_file = img_name.split("_")[0]
+    result = list()
+
+    for output in outputs_list:
+        # log.info(f"titile: {titile}")
+        titile = output[0]
+        sample_title, ref_title = titile.split(",")
         # i is sample segment seq
         # j is reference segment seq
-        i, j = int(img_name.split("_")[1]), int(img_name.split("_")[2])
-        if batch_feat_result[img_name] != [[]]:
-            for r in batch_feat_result[img_name]:
-                sample_start_frame = math.floor((r[0] + i * segment_length))
-                ref_start_frame = math.floor((r[1] + j * segment_length))
-                sample_end_frame = math.ceil((r[2] + i * segment_length))
-                ref_end_frame = math.ceil((r[3] + j * segment_length))
+        i = output[1]
+        j = output[2]
 
-                # log.info(f"sample_start_frame: {sample_start_frame}")
+        for r in output[3]:
+            sample_start_frame = math.floor((r[0] + i * segment_length))
+            ref_start_frame = math.floor((r[1] + j * segment_length))
+            sample_end_frame = math.ceil((r[2] + i * segment_length))
+            ref_end_frame = math.ceil((r[3] + j * segment_length))
 
-                sample_start_timeformat = _milliseconds_to_hhmmss(
-                    sample_start_frame * sample_frame_interval
-                )
-                ref_start_timeformat = _milliseconds_to_hhmmss(
-                    ref_start_frame * ref_frame_interval
-                )
-                sample_end_timeformat = _milliseconds_to_hhmmss(
-                    sample_end_frame * sample_frame_interval
-                )
-                ref_end_timeformat = _milliseconds_to_hhmmss(
-                    ref_end_frame * ref_frame_interval
-                )
-                confirm_score = round(r[4] * 100.000, 2)
+            # log.info(f"sample seg: {i}, sample: {sample_start_frame} -- {sample_end_frame} || ref seg: {j}, ref: {ref_start_frame} -- {ref_end_frame}")
 
-                video_match_segment = VideoSegment(
-                    sample_start_time=sample_start_timeformat,
-                    sample_end_time=sample_end_timeformat,
-                    ref_start_time=ref_start_timeformat,
-                    ref_end_time=ref_end_timeformat,
-                    score=confirm_score,
-                )
+            sample_start_timeformat = _milliseconds_to_hhmmss(
+                sample_start_frame * sample_frame_interval
+            )
+            ref_start_timeformat = _milliseconds_to_hhmmss(
+                ref_start_frame * ref_frame_interval
+            )
+            sample_end_timeformat = _milliseconds_to_hhmmss(
+                sample_end_frame * sample_frame_interval
+            )
+            ref_end_timeformat = _milliseconds_to_hhmmss(
+                ref_end_frame * ref_frame_interval
+            )
+            confirm_score = round(r[4] * 100.000, 2)
 
-                result[img_file].append(video_match_segment)
+            video_match_segment = VideoSegment(
+                sample_start_time=sample_start_timeformat,
+                sample_end_time=sample_end_timeformat,
+                ref_start_time=ref_start_timeformat,
+                ref_end_time=ref_end_timeformat,
+                score=confirm_score,
+                sample_title=sample_title,
+                ref_title=ref_title,
+                sample_seg_id=i,
+                ref_seg_id=j,
+                sample_start_frame=sample_start_frame,
+                sample_end_frame=sample_end_frame,
+                ref_start_frame=ref_start_frame,
+                ref_end_frame=ref_end_frame,
+            )
+
+            result.append(video_match_segment)
 
     return result

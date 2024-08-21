@@ -10,11 +10,19 @@ import numpy as np
 import shutil
 import concurrent.futures
 import multiprocessing
+import copy
 
 
 from models.iscnet_utils import create_isc_model, gen_img_feats_by_ISCNet
-from models.transvcl_utils import create_transvcl_model, gen_match_segments_by_transVCL
-from models.transform_feats import trans_isc_features_to_transVCL_fromat
+from models.transvcl_utils import (
+    create_transvcl_model,
+    gen_match_segments_by_transVCL,
+    VideoSegment,
+)
+from models.transform_feats import (
+    trans_isc_features_to_transVCL_fromat,
+    trans_isc_features_to_transVCL_fromat2,
+)
 from ffmpeg.ffmpeg_utils import generate_imgs
 from loguru import logger as log
 from utils.time_utils import TimeRecorder
@@ -212,18 +220,21 @@ def _generate_feats(
     ]
 
     for img_dir_path in tmp_imgs_output_dir:
-        rimgs_list = [
-            os.path.join(img_dir_path, img_name)
-            for img_name in os.listdir(img_dir_path)
-        ]
+        imgs_list = os.listdir(img_dir_path)
+        # sort imgs for listdir may not return by the number order...
+        # print(imgs_list)
 
-        imgs_count += len(rimgs_list)
+        tmp_imgs_list = sorted(imgs_list, key=lambda x: int(x.split(".")[0]))
 
-        log.info(f"start gen feats, imgs len: {len(rimgs_list)}")
+        imgs_list.clear()
+        imgs_list = [os.path.join(img_dir_path, img_name) for img_name in tmp_imgs_list]
+        imgs_count += len(imgs_list)
+
+        log.info(f"start gen feats, imgs len: {len(imgs_list)}")
         # it's very slow when use cpu to generate image feats....
         feats_time_recorder.start_record()
         ref_isc_feats = gen_img_feats_by_ISCNet(
-            rimgs_list, isc_model, isc_processer, device
+            imgs_list, isc_model, isc_processer, device
         )
         feats_time_recorder.end_record()
         log.info(f"get feats: {ref_isc_feats.shape}")
@@ -267,19 +278,15 @@ def _load_feats(feats_store_dir_path: str):
     return feat_dict
 
 
-def _excute_transform(params):
-    sample_name, sample_feats, ref_feats_dict, segment_length = params
-    transvcl_batch_feats_list = list()
-    for ref_name, ref_feats in ref_feats_dict.items():
-        transvcl_batch_feats = trans_isc_features_to_transVCL_fromat(
-            sample_feats, ref_feats, f"{sample_name} Vs {ref_name}", segment_length
-        )
+def _hhmmss_to_milliseconds(hhmmss: str) -> int:
+    # Split the input string by ':'
+    hours, minutes, seconds = map(int, hhmmss.split(":"))
 
-        if len(transvcl_batch_feats) == 0:
-            continue
+    # Convert everything to milliseconds
+    total_milliseconds = (hours * 3600 + minutes * 60 + seconds) * 1000
 
-        transvcl_batch_feats_list.append(transvcl_batch_feats)
-    return transvcl_batch_feats_list
+    return total_milliseconds
+
 
 
 def _query_matched_videos(
@@ -303,44 +310,188 @@ def _query_matched_videos(
     )
 
     for sample_name, sample_feats in sample_feats_dict.items():
-        if sample_name != "EmpressesInThePalace_2" and sample_name != "EmpressesInThePalace_3":
-            continue
+        # if (
+        #     sample_name != "EmpressesInThePalace_3"
+        #     and sample_name != "EmpressesInThePalace_3"
+        # ):
+        #     continue
+
+        # sample_seg_id = 0
+        # 对样本进行分段
+        sample_list = [
+            sample_feats[i * segment_length : (i + 1) * segment_length]
+            for i in range(len(sample_feats) // segment_length)
+        ]
+
+        if len(sample_feats) % segment_length != 0:
+            sample_list.append(
+                sample_feats[(len(sample_feats) // segment_length) * segment_length :]
+            )
+
+        log.info(
+            f"sample: {sample_name} have {len(sample_list)} segments, each segments have {segment_length} frames.."
+        )
 
         for ref_name, ref_feats in ref_feats_dict.items():
-            if ref_name != "EmpressesInThePalaceR_2":
-                continue
+            # if ref_name != "EmpressesInThePalaceR_2":
+            #     continue
 
             titile = f"{sample_name},{ref_name}"
 
-            log.info(f"{titile} start spilit feats to segment....")
-            transform_time_recorder.start_record()
-            transvcl_batch_feats = trans_isc_features_to_transVCL_fromat(
-                sample_feats, ref_feats, titile, segment_length
+            ref_list = [
+                ref_feats[j * segment_length : (j + 1) * segment_length]
+                for j in range(len(ref_feats) // segment_length)
+            ]
+
+            if len(ref_feats) % segment_length != 0:
+                ref_list.append(
+                    ref_feats[(len(ref_feats) // segment_length) * segment_length :]
+                )
+
+            ref_max_seg_id = len(ref_list) - 1
+
+            log.info(
+                f"sample: {ref_name} have {len(ref_list)} segments, each segments have {segment_length} frames.."
             )
-            transform_time_recorder.end_record()
 
-            if len(transvcl_batch_feats) == 0:
-                log.warning(f"{titile} skip for no segments....")
-                continue
+            matched_segments_list: list[VideoSegment] = list()
+            global_search_flag = True
 
-            log.info(f"{titile} start to locate copied segment ")
+            for sample_seg_id, sample_feats in enumerate(sample_list):
+                # if sample_seg_id >= 3:
+                #     break
+                src_len = len(matched_segments_list)
+                # 样本第一个分段 或者 是上一分段无结果
+                if global_search_flag:
+                    # log.info("global search")
+                    # first global
+                    compare_batch_feats_list = trans_isc_features_to_transVCL_fromat2(
+                        sample_seg_id,
+                        sample_list[sample_seg_id],
+                        0,
+                        ref_list,
+                        titile,
+                        segment_length,
+                        device,
+                    )
 
-            compare_time_recorder.start_record()
-            matched_segments = gen_match_segments_by_transVCL(
-                transvcl_model,
-                transvcl_batch_feats,
-                confthre,
-                nmsthre,
-                img_size,
-                segment_length,
-                frame_interval,
-                frame_interval,
-                device,
-            )
-            compare_time_recorder.end_record()
+                    matched_segments = gen_match_segments_by_transVCL(
+                        transvcl_model,
+                        compare_batch_feats_list,
+                        confthre,
+                        nmsthre,
+                        img_size,
+                        segment_length,
+                        frame_interval,
+                        frame_interval,
+                        device,
+                    )
 
-            for matched_seg_title in matched_segments:
-                log.info(f"matched_segments: {matched_segments[matched_seg_title]}")
+                    for matched_seg in matched_segments:
+                        # if matched_seg.score < 90:
+                        #     continue
+
+                    #     if (
+                    #         abs(
+                    #             matched_seg.get_sample_len() - matched_seg.get_ref_len()
+                    #         )
+                    #         > 5 * 1000
+                    #     ):
+                    #         continue
+                        matched_segments_list.append(matched_seg)
+
+                    # for tmp in matched_segments:
+                    #     log.info(
+                    #         f"global search, sample seg: {tmp.sample_seg_id} mathched with ref seg: {tmp.ref_seg_id} --- {tmp}"
+                    #     )
+                else:
+                    # Todo:
+                    # 1. 增量搜索可能会导致当前 seg 无匹配，需要重新进行全局匹配
+                    # 2. 匹配分段 merge 逻辑
+                    log.info("increasement search")
+                    tmp_matched_segments_list: list[VideoSegment] = list()
+                    for last_matched_segments in matched_segments_list:
+                        last_ref_seg_id = last_matched_segments.ref_seg_id
+                        if last_ref_seg_id >= ref_max_seg_id:
+                            continue
+
+                        # log.info(
+                        #     f"increasement search, sample seg: {sample_seg_id}, last ref seg: {last_ref_seg_id}, now ref seg: {last_ref_seg_id + 1}"
+                        # )
+                        compare_batch_feats_list = (
+                            trans_isc_features_to_transVCL_fromat2(
+                                sample_seg_id,
+                                sample_list[sample_seg_id],
+                                last_ref_seg_id + 1,
+                                ref_list[last_ref_seg_id + 1 : last_ref_seg_id + 2],
+                                titile,
+                                segment_length,
+                                device,
+                            )
+                        )
+
+                        matched_segments = gen_match_segments_by_transVCL(
+                            transvcl_model,
+                            compare_batch_feats_list,
+                            confthre,
+                            nmsthre,
+                            img_size,
+                            segment_length,
+                            frame_interval,
+                            frame_interval,
+                            device,
+                        )
+
+                        for matched_seg in matched_segments:
+                            tmp_matched_segments_list.append(matched_seg)
+                            if (
+                                abs(
+                                    _hhmmss_to_milliseconds(
+                                        last_matched_segments.ref_end_time
+                                    )
+                                    - _hhmmss_to_milliseconds(
+                                        matched_seg.ref_start_time
+                                    )
+                                )
+                                <= 5 * 1000
+                            ) and (
+                                abs(
+                                    _hhmmss_to_milliseconds(
+                                        last_matched_segments.sample_end_time
+                                    )
+                                    - _hhmmss_to_milliseconds(
+                                        matched_seg.sample_start_time
+                                    )
+                                )
+                                <= 5 * 1000
+                            ):
+                                last_matched_segments.next_video_segment = matched_seg
+
+                            # log.info(f"increasement search, {matched_seg}")
+
+                    matched_segments_list.extend(tmp_matched_segments_list)
+
+                new_len = len(matched_segments_list)
+
+                # if new_len == src_len:
+                #     global_search_flag = True
+                # else:
+                #     global_search_flag = False
+
+            for matched_seg in matched_segments_list:
+                if matched_seg.choiced:
+                    continue
+
+                tmp_matched_seg = matched_seg
+                info = str("")
+                while tmp_matched_seg is not None:
+                    info += str(tmp_matched_seg)
+                    tmp_matched_seg.choiced = True
+                    tmp_matched_seg = tmp_matched_seg.next_video_segment
+
+                # log.info(" ------ ")
+                log.info(info)
+                # log.info(" ====== \n")
 
     log.info(
         f"finish all, transform avg cost {transform_time_recorder.get_avg_duration_miliseconds()} ms, compare avg cost {compare_time_recorder.get_avg_duration_miliseconds()} ms"
@@ -400,18 +551,17 @@ def main():
     sample_imgs_output_dir = os.path.join(output_dir, "imgs", sample_output_base_name)
 
     if re_extract_imgs_flag:
-        shutil.rmtree(ref_imgs_output_dir, ignore_errors=True)
-        shutil.rmtree(sample_imgs_output_dir, ignore_errors=True)
-        os.makedirs(ref_imgs_output_dir, exist_ok=True)
-        os.makedirs(sample_imgs_output_dir, exist_ok=True)
         executor_num = 2
-
         log.info(f"star generate ref imgs with {executor_num} worker ...")
+        shutil.rmtree(ref_imgs_output_dir, ignore_errors=True)
+        os.makedirs(ref_imgs_output_dir, exist_ok=True)
         _generate_imgs(
             ffmpeg_path, ref_videos_dir_path, ref_imgs_output_dir, fps, executor_num
         )
 
         log.info(f"star generate sample imgs with {executor_num} worker ...")
+        shutil.rmtree(sample_imgs_output_dir, ignore_errors=True)
+        os.makedirs(sample_imgs_output_dir, exist_ok=True)
         _generate_imgs(
             ffmpeg_path,
             sample_videos_dir_path,
@@ -428,17 +578,17 @@ def main():
     sample_feats_output_dir = os.path.join(output_dir, "feats", sample_output_base_name)
 
     if re_extract_imgs_feats_flag:
-        shutil.rmtree(ref_feats_output_dir, ignore_errors=True)
-        shutil.rmtree(sample_feats_output_dir, ignore_errors=True)
-        os.makedirs(ref_feats_output_dir, exist_ok=True)
-        os.makedirs(sample_feats_output_dir, exist_ok=True)
-
         log.info(f"star generate ref feats...")
+        shutil.rmtree(ref_feats_output_dir, ignore_errors=True)
+        os.makedirs(ref_feats_output_dir, exist_ok=True)
         _generate_feats(
             ref_imgs_output_dir, ref_feats_output_dir, isc_weight_path, device
         )
 
         log.info(f"star generate sample feats...")
+        shutil.rmtree(sample_feats_output_dir, ignore_errors=True)
+        os.makedirs(sample_feats_output_dir, exist_ok=True)
+
         _generate_feats(
             sample_imgs_output_dir, sample_feats_output_dir, isc_weight_path, device
         )
@@ -449,26 +599,26 @@ def main():
 
     # 3. 加载特征
 
-    log.info(f"start load feats in {ref_feats_output_dir}")
-    ref_feats_dict = _load_feats(ref_feats_output_dir)
+    # log.info(f"start load feats in {ref_feats_output_dir}")
+    # ref_feats_dict = _load_feats(ref_feats_output_dir)
 
-    log.info(f"start load feats in {sample_feats_output_dir}")
-    sample_feats_dict = _load_feats(sample_feats_output_dir)
+    # log.info(f"start load feats in {sample_feats_output_dir}")
+    # sample_feats_dict = _load_feats(sample_feats_output_dir)
 
-    # 4. 查询
-    worker_num = 5
-    _query_matched_videos(
-        transvcl_weight_path,
-        confthre,
-        nmsthre,
-        img_size,
-        device,
-        sample_feats_dict,
-        ref_feats_dict,
-        segment_length,
-        frame_interval,
-        worker_num,
-    )
+    # # 4. 查询
+    # worker_num = 5
+    # _query_matched_videos(
+    #     transvcl_weight_path,
+    #     confthre,
+    #     nmsthre,
+    #     img_size,
+    #     device,
+    #     sample_feats_dict,
+    #     ref_feats_dict,
+    #     segment_length,
+    #     frame_interval,
+    #     worker_num,
+    # )
 
 
 if __name__ == "__main__":

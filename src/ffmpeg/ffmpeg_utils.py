@@ -40,7 +40,8 @@ def generate_imgs(
     except Exception as e:
         raise ValueError(f"create output dir: {tmp_output_imgs_dir_path} failed for {e}")
 
-    command = f"{ffmpeg_bin_file_path} -i {input_file_path} -loglevel error -nostdin -y -vf fps={fps} -start_number 0 -q 0 {tmp_output_imgs_dir_path}/%05d.jpg"
+    command = f"{ffmpeg_bin_file_path} -i {input_file_path} -loglevel error -nostdin -y -vf fps={fps} -start_number 0 -q 0 {tmp_output_imgs_dir_path}/%06d.jpg"
+    log.info(f"run ffmpeg {command}")
 
     try:
         ffmpeg_p = subprocess.Popen(

@@ -2,15 +2,26 @@ import torch
 import numpy as np
 from loguru import logger as log
 
+
 def _feat_paddding(feat: torch.Tensor, axis: int, new_size: int, fill_value: int = 0):
     pad_shape = list(feat.shape)
     pad_shape[axis] = max(0, new_size - pad_shape[axis])
-    feat_pad = torch.Tensor(*pad_shape).fill_(fill_value)
-    return torch.cat([feat, feat_pad], dim=axis)
+
+    # 只有当需要填充时才进行填充操作
+    if pad_shape[axis] > 0:
+        pad = torch.full(pad_shape, fill_value, dtype=feat.dtype, device=feat.device)
+        return torch.cat([feat, pad], dim=axis)
+
+    # 如果没有需要填充的部分，直接返回原始张量
+    return feat
 
 
 def trans_isc_features_to_transVCL_fromat(
-    sample_feats: np.ndarray, ref_feats: np.ndarray, file_name: str, segment_length:int
+    sample_feats: np.ndarray,
+    ref_feats: np.ndarray,
+    title: str,
+    segment_length: int,
+    device: str = "cuda",
 ):
     """
     Feature transformer for ISCNet features to TransVCL features format
@@ -26,63 +37,124 @@ def trans_isc_features_to_transVCL_fromat(
             n = len(imgs_path_list)\n
             m = model output features dim\n
 
-        file_name (`str`):
+        title (`str`):
             compare task name
+
+        device (`str="cuda"`):
+            Devices for model inference, must be same as the model use.
 
         segment_length (`int`)
             frames number of each segment, it's ok if real frame length is lesser than segment_length
     """
-    # segment_length = 1200
-    sample_list, ref_list = [], []
-    i, j = -1, -1
 
-    for i in range(len(sample_feats) // segment_length):
-        sample_list.append(sample_feats[i * segment_length : (i + 1) * segment_length])
+    sample_list = [
+        sample_feats[i * segment_length : (i + 1) * segment_length]
+        for i in range(len(sample_feats) // segment_length)
+    ]
+    ref_list = [
+        ref_feats[j * segment_length : (j + 1) * segment_length]
+        for j in range(len(ref_feats) // segment_length)
+    ]
 
-    # log.info(
-    #     f"i: {i}, feat length: {segment_length}, sample_feats len: {len(sample_feats)} {len(sample_feats) // segment_length}, sample_list: {len(sample_list)}"
-    # )
+    # 添加剩余部分
+    if len(sample_feats) % segment_length != 0:
+        sample_list.append(
+            sample_feats[(len(sample_feats) // segment_length) * segment_length :]
+        )
 
-    for j in range(len(ref_feats) // segment_length):
-        ref_list.append(ref_feats[j * segment_length : (j + 1) * segment_length])
-
-    if len(sample_feats) > (i + 1) * segment_length:
-        sample_list.append(sample_feats[(i + 1) * segment_length :])
-
-    if len(ref_feats) > (j + 1) * segment_length:
-        ref_list.append(ref_feats[(j + 1) * segment_length :])
-
-    # log.info(
-    #     f"i: {i}, feat length: {segment_length}, sample_feats len: {len(sample_feats)} {len(sample_feats) // segment_length}, sample_list: {len(sample_list)} {type(sample_list[0])}"
-    # )
+    if len(ref_feats) % segment_length != 0:
+        ref_list.append(
+            ref_feats[(len(ref_feats) // segment_length) * segment_length :]
+        )
 
     batch_list = []
-    for i in range(len(sample_list)):
-        for j in range(len(ref_list)):
-            sample_mask, ref_mask = np.zeros(segment_length, dtype=bool), np.zeros(
-                segment_length, dtype=bool
+    for i, sample in enumerate(sample_list):
+        for j, ref in enumerate(ref_list):
+            # 获取有效长度
+            sample_valid_len = len(sample)
+            ref_valid_len = len(ref)
+
+            # 创建填充后的张量
+            sample_feat_padding = _feat_paddding(
+                torch.tensor(sample, device=device), 0, segment_length
             )
-            sample_mask[: len(sample_list[i])] = True
-            ref_mask[: len(ref_list[j])] = True
+            ref_feat_padding = _feat_paddding(
+                torch.tensor(ref, device=device), 0, segment_length
+            )
 
-            sample_feat_padding = _feat_paddding(torch.tensor(sample_list[i]), 0, segment_length)
-            ref_feat_padding = _feat_paddding(torch.tensor(ref_list[j]), 0, segment_length)
-            img_info = [
-                torch.tensor([len(sample_list[i])]),
-                torch.tensor([len(ref_list[j])]),
-            ]
-
-            file_name_idx = file_name + "_" + str(i) + "_" + str(j)
-
+            # 移动到 CPU 并保存结果
             batch_list.append(
                 (
-                    sample_feat_padding,
-                    ref_feat_padding,
-                    torch.from_numpy(sample_mask),
-                    torch.from_numpy(ref_mask),
-                    img_info,
-                    file_name_idx,
+                    sample_feat_padding.cpu(),
+                    ref_feat_padding.cpu(),
+                    torch.tensor(
+                        [True] * sample_valid_len
+                        + [False] * (segment_length - sample_valid_len)
+                    ).cpu(),
+                    torch.tensor(
+                        [True] * ref_valid_len
+                        + [False] * (segment_length - ref_valid_len)
+                    ).cpu(),
+                    [
+                        torch.tensor([sample_valid_len], device=device).cpu(),
+                        torch.tensor([ref_valid_len], device=device).cpu(),
+                    ],
+                    title,
+                    i,
+                    j,
                 )
             )
+
+    return batch_list
+
+
+def trans_isc_features_to_transVCL_fromat2(
+    sample_seg_id: int,
+    sample_feats: np.ndarray,
+    ref_seg_id_offset:int,
+    ref_feats_list: list[np.ndarray],
+    title: str,
+    segment_length: int,
+    device: str = "cuda",
+):
+    a = 1
+    batch_list = []
+
+    for ref_seg_id, ref_feats in enumerate(ref_feats_list):
+        sample_valid_len = len(sample_feats)
+        ref_valid_len = len(ref_feats)
+
+        # 创建填充后的张量
+        sample_feat_padding = _feat_paddding(
+            torch.tensor(sample_feats, device=device), 0, segment_length
+        )
+        ref_feat_padding = _feat_paddding(
+            torch.tensor(ref_feats, device=device), 0, segment_length
+        )
+        # 移动到 CPU 并保存结果
+        batch_list.append(
+            (
+                sample_feat_padding.cpu(),
+                ref_feat_padding.cpu(),
+                torch.tensor(
+                    [True] * sample_valid_len
+                    + [False] * (segment_length - sample_valid_len)
+                ).cpu(),
+                torch.tensor(
+                    [True] * ref_valid_len + [False] * (segment_length - ref_valid_len)
+                ).cpu(),
+                [
+                    torch.tensor([sample_valid_len], device=device).cpu(),
+                    torch.tensor([ref_valid_len], device=device).cpu(),
+                ],
+                title,
+                sample_seg_id,
+                ref_seg_id + ref_seg_id_offset,
+            )
+        )
+    
+    # log.info("print batch_list ==== ")
+    # for tmp in batch_list:
+    #     log.info(f"sample seg: {tmp[6]} -- ref seg: {tmp[7]}")
 
     return batch_list

@@ -170,7 +170,9 @@ if __name__ == "__main__":
         log.warning(f"segment duration reset to {segment_duration} ms")
 
     segment_length = round(segment_duration / frame_interval)
-    log.info(f"segment_length: {segment_length} segment_duration: {segment_duration}, frame_interval: {frame_interval}")
+    log.info(
+        f"segment_length: {segment_length} segment_duration: {segment_duration}, frame_interval: {frame_interval}"
+    )
 
     # get imgs from reference media file and sample media file
     log.info(f"start get imgs from {ref_file_path}, img fps: {fps}")
@@ -207,19 +209,21 @@ if __name__ == "__main__":
 
     # tmp code
     sample_feats_path = os.path.join(
-        "/data/jinzijian/assets/vmatch-videos",
+        "./output/single_test",
         f"{os.path.splitext(os.path.basename(sample_file_path))[0]}.npy",
     )
 
     ref_feats_path = os.path.join(
-        "/data/jinzijian/assets/vmatch-videos",
+        "./output/single_test",
         f"{os.path.splitext(os.path.basename(ref_file_path))[0]}.npy",
     )
 
     log.info("save sample feats")
+    os.makedirs(os.path.dirname(sample_feats_path), exist_ok=True)
     np.save(sample_feats_path, sample_isc_feats)
 
     log.info("save ref feats")
+    os.makedirs(os.path.dirname(ref_feats_path), exist_ok=True)
     np.save(ref_feats_path, ref_isc_feats)
 
     log.info("create transvcl model")

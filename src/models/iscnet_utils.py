@@ -3,11 +3,13 @@ import timm
 import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
+
 # from iscnet.isc_model import ISCNet
 from .iscnet.isc_model import ISCNet
 from torchvision import transforms
 from PIL import Image
 from loguru import logger as log
+
 
 def create_isc_model(
     weight_file_path: str,
@@ -50,6 +52,7 @@ def create_isc_model(
 
     arch = ckpt["arch"]  # tf_efficientnetv2_m_in21ft1k
     input_size = ckpt["args"].input_size
+    log.info(f"IscNet input_size: {input_size}")
 
     if arch == "tf_efficientnetv2_m_in21ft1k":
         arch = "timm/tf_efficientnetv2_m.in21k_ft_in1k"
@@ -97,7 +100,8 @@ def create_isc_model(
 
     preprocessor = transforms.Compose(
         [
-            transforms.Resize((input_size, input_size)),
+            transforms.Resize((input_size * 2, input_size * 2)),
+            transforms.CenterCrop((input_size, input_size)),
             transforms.ToTensor(),
             transforms.Normalize(
                 mean=backbone.default_cfg["mean"],
@@ -161,7 +165,5 @@ def gen_img_feats_by_ISCNet(
         img_feat = model(img_tensor).detach().cpu().numpy()
 
         feats_list.append(img_feat.reshape(-1))
-
-    feats_array = np.array(feats_list)
-    log.info(f"feats_array: {feats_array.shape}")
+    feats_array = np.array(feats_list)  # type: ignore
     return feats_array
