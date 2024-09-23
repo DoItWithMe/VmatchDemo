@@ -15,7 +15,7 @@ import multiprocessing
 from models.iscnet_utils import create_isc_model, gen_img_feats_by_ISCNet
 from models.transvcl_utils import create_transvcl_model, gen_match_segments_by_transVCL
 from models.transform_feats import trans_isc_features_to_transVCL_fromat
-from ffmpeg.ffmpeg_utils import generate_imgs
+from ffmpeg.ffmpeg import extract_imgs
 from loguru import logger as log
 from utils.time_utils import TimeRecorder
 from typing import Any
@@ -179,7 +179,7 @@ def _generate_imgs(
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=executor_num) as executor:
         executor.map(
-            lambda args: generate_imgs(args[0], args[1], args[2], args[3]),
+            lambda args: extract_imgs(args[0], args[1], args[2], args[3]),
             args_list,
         )
 

@@ -17,7 +17,7 @@ from PIL import Image
 import matplotlib.pyplot as plt
 import uuid
 
-from utils.query_results_utils import merge_frames_
+from results_handler.query_results_handler import handler_query_results
 
 
 def init_log():
@@ -158,7 +158,6 @@ def _add_ref(
     media_info_db_name: str,
     ref_feat_dict: dict[str, Any],
 ):
-    offset = 0
     for ref_name, ref_feats in ref_feat_dict.items():
         ref_uuid = str(uuid.uuid4())
 
@@ -183,7 +182,6 @@ def _add_ref(
                     "embedding": feat,
                 },
             )
-        offset += len(ref_feats)
 
 
 def _denormalize(tensor, mean, std):
@@ -293,7 +291,7 @@ def _query(
             limit=3 * segment_len_limit,
         )
 
-        merge_frames_(
+        handler_query_results(
             milvus_client,
             media_info_collection_name,
             l2_dis_thresh,

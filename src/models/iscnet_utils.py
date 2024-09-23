@@ -3,18 +3,17 @@ import timm
 import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
+import os
 
-# from iscnet.isc_model import ISCNet
 from .iscnet.isc_model import ISCNet
 from torchvision import transforms
 from PIL import Image
 from loguru import logger as log
 from torch.utils.data import DataLoader, Dataset
+from .exception import _exception_handler
 
-import os
 
-
-class IscNetDataSet(Dataset):
+class _IscNetDataSet(Dataset):
     def __init__(
         self,
         imgs_path_list,
@@ -40,9 +39,10 @@ class IscNetDataSet(Dataset):
         )
 
 
-def flatten_data(samples, device):
-    batch_size = samples.size(0)
-    num_samples_per_image = samples.size(1)
+@_exception_handler
+def _flatten_data(samples, device):
+    # batch_size = samples.size(0)
+    # num_samples_per_image = samples.size(1)
     channels = samples.size(2)
     height = samples.size(3)
     width = samples.size(4)
@@ -50,6 +50,7 @@ def flatten_data(samples, device):
     return samples.view(-1, channels, height, width).to(device)
 
 
+@_exception_handler
 def create_isc_model(
     weight_file_path: str,
     fc_dim: int = 256,
@@ -91,12 +92,10 @@ def create_isc_model(
 
     arch = ckpt["arch"]  # tf_efficientnetv2_m_in21ft1k
     input_size = ckpt["args"].input_size
-    log.info(f"IscNet input_size: {input_size}")
 
     if arch == "tf_efficientnetv2_m_in21ft1k":
         arch = "timm/tf_efficientnetv2_m.in21k_ft_in1k"
 
-    log.info(f"arch: {arch}")
     backbone = timm.create_model(arch, features_only=True)
     model = ISCNet(
         backbone=backbone,
@@ -150,15 +149,13 @@ def create_isc_model(
         ]
     )
 
-    log.info(f"mean: {backbone.default_cfg['mean']}")
-    log.info(f"std: {backbone.default_cfg['std']}")
-
     if device == "cuda":
         model = torch.nn.DataParallel(model.cuda())
 
     return model, preprocessor
 
 
+@_exception_handler
 def gen_img_feats_by_ISCNet(
     imgs_path_list: list[str],
     model: nn.Module,
@@ -200,12 +197,13 @@ def gen_img_feats_by_ISCNet(
 
     if preprocessor is None:
         raise RuntimeError(f"processcessor is not set!")
+
     from utils.time_utils import TimeRecorder
 
     tmp_recorder = TimeRecorder()
     tmp_recorder2 = TimeRecorder()
 
-    dataset = IscNetDataSet(imgs_path_list, preprocessor)
+    dataset = _IscNetDataSet(imgs_path_list, preprocessor)
     data_loader = DataLoader(
         dataset,
         batch_size=32,
@@ -218,8 +216,7 @@ def gen_img_feats_by_ISCNet(
 
     tmp_recorder.start_record()
     for _, (imgs, index) in enumerate(data_loader):
-        flatten_imgs = flatten_data(imgs, device)
-        # log.info(f"imgs: {imgs.shape}, {flatten_data(imgs, device).shape}")
+        flatten_imgs = _flatten_data(imgs, device)
         with torch.no_grad():
             tmp_recorder2.start_record()
             imgs_feat = model(flatten_imgs).detach().cpu().numpy()
@@ -234,7 +231,4 @@ def gen_img_feats_by_ISCNet(
     log.info(
         f"file: {os.path.dirname(imgs_path_list[0])}, extract feats with device: {device}, batch size: 32, worker of dataloader: 8, total cost: {tmp_recorder.get_total_duration_miliseconds()} ms, each batch extarct cost: {tmp_recorder2.get_avg_duration_miliseconds()} ms"
     )
-    # log.info(
-    #     f"preprocessor cost: {tmp_recorder.get_avg_duration_miliseconds()}, model cost: {tmp_recorder2.get_avg_duration_miliseconds()}"
-    # )
     return feats_array

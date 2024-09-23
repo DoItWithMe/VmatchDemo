@@ -23,7 +23,7 @@ from models.transform_feats import (
     trans_isc_features_to_transVCL_fromat,
     trans_isc_features_to_transVCL_fromat2,
 )
-from ffmpeg.ffmpeg_utils import generate_imgs
+from ffmpeg.ffmpeg import extract_imgs
 from loguru import logger as log
 from utils.time_utils import TimeRecorder
 from typing import Any
@@ -188,7 +188,7 @@ def _generate_imgs(
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=executor_num) as executor:
         executor.map(
-            lambda args: generate_imgs(args[0], args[1], args[2], args[3]),
+            lambda args: extract_imgs(args[0], args[1], args[2], args[3]),
             args_list,
         )
 

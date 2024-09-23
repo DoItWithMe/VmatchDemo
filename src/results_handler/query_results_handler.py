@@ -1,10 +1,8 @@
 from typing import Any
 from loguru import logger as log
 from pydantic import BaseModel
-import pickle
-import copy
 from pymilvus import MilvusClient
-from .time_utils import milliseconds_to_hhmmss
+from utils.time_utils import milliseconds_to_hhmmss
 
 
 class MediaDes(BaseModel):
@@ -494,7 +492,7 @@ class QueryResultHandler:
     #         log.info(f"sample_name: {sample_name} have no match, attetion it!!!!!")
 
 
-def merge_frames_(
+def handler_query_results(
     milvus_client: MilvusClient,
     media_info_collection_name: str,
     l2_dis_thresh: float,

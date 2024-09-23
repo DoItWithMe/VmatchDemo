@@ -11,7 +11,7 @@ import numpy as np
 from models.iscnet_utils import create_isc_model, gen_img_feats_by_ISCNet
 from models.transvcl_utils import create_transvcl_model, gen_match_segments_by_transVCL
 from models.transform_feats import trans_isc_features_to_transVCL_fromat
-from ffmpeg.ffmpeg_utils import generate_imgs
+from ffmpeg.ffmpeg import extract_imgs
 
 from loguru import logger as log
 
@@ -176,14 +176,14 @@ if __name__ == "__main__":
 
     # get imgs from reference media file and sample media file
     log.info(f"start get imgs from {ref_file_path}, img fps: {fps}")
-    ref_imgs_dir_path = generate_imgs(ffmpeg_path, ref_file_path, output_dir, fps)
+    ref_imgs_dir_path = extract_imgs(ffmpeg_path, ref_file_path, output_dir, fps)
     ref_imgs_list = [
         os.path.join(ref_imgs_dir_path, img_name)
         for img_name in os.listdir(ref_imgs_dir_path)
     ]
 
     log.info(f"start get imgs from {sample_file_path}, img fps: {fps}")
-    sample_imgs_dir_path = generate_imgs(ffmpeg_path, sample_file_path, output_dir, fps)
+    sample_imgs_dir_path = extract_imgs(ffmpeg_path, sample_file_path, output_dir, fps)
     sample_imgs_list = [
         os.path.join(sample_imgs_dir_path, img_name)
         for img_name in os.listdir(sample_imgs_dir_path)
