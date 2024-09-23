@@ -9,6 +9,45 @@ from .iscnet.isc_model import ISCNet
 from torchvision import transforms
 from PIL import Image
 from loguru import logger as log
+from torch.utils.data import DataLoader, Dataset
+
+import os
+
+
+class IscNetDataSet(Dataset):
+    def __init__(
+        self,
+        imgs_path_list,
+        preprocessor,
+    ):
+        self.preprocessor = preprocessor
+        self.dataset = imgs_path_list
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, index):
+        img_path = self.dataset[index]
+        img = Image.open(img_path).convert("RGB")
+        img = self.preprocessor(img)
+
+        imgs = list()
+        imgs.append(img)
+
+        return (
+            torch.stack(imgs),
+            index,
+        )
+
+
+def flatten_data(samples, device):
+    batch_size = samples.size(0)
+    num_samples_per_image = samples.size(1)
+    channels = samples.size(2)
+    height = samples.size(3)
+    width = samples.size(4)
+
+    return samples.view(-1, channels, height, width).to(device)
 
 
 def create_isc_model(
@@ -57,6 +96,7 @@ def create_isc_model(
     if arch == "tf_efficientnetv2_m_in21ft1k":
         arch = "timm/tf_efficientnetv2_m.in21k_ft_in1k"
 
+    log.info(f"arch: {arch}")
     backbone = timm.create_model(arch, features_only=True)
     model = ISCNet(
         backbone=backbone,
@@ -98,10 +138,10 @@ def create_isc_model(
 
     model.load_state_dict(state_dict)
 
+    assert input_size == 512
     preprocessor = transforms.Compose(
         [
-            transforms.Resize((input_size * 2, input_size * 2)),
-            transforms.CenterCrop((input_size, input_size)),
+            transforms.Resize((input_size, input_size)),
             transforms.ToTensor(),
             transforms.Normalize(
                 mean=backbone.default_cfg["mean"],
@@ -109,6 +149,9 @@ def create_isc_model(
             ),
         ]
     )
+
+    log.info(f"mean: {backbone.default_cfg['mean']}")
+    log.info(f"std: {backbone.default_cfg['std']}")
 
     if device == "cuda":
         model = torch.nn.DataParallel(model.cuda())
@@ -157,13 +200,41 @@ def gen_img_feats_by_ISCNet(
 
     if preprocessor is None:
         raise RuntimeError(f"processcessor is not set!")
+    from utils.time_utils import TimeRecorder
+
+    tmp_recorder = TimeRecorder()
+    tmp_recorder2 = TimeRecorder()
+
+    dataset = IscNetDataSet(imgs_path_list, preprocessor)
+    data_loader = DataLoader(
+        dataset,
+        batch_size=32,
+        shuffle=False,
+        num_workers=8,
+        drop_last=False,
+    )
 
     feats_list = list()
-    for img_path in imgs_path_list:
-        img = Image.open(img_path)
-        img_tensor = preprocessor(img).unsqueeze(0).to(device)
-        img_feat = model(img_tensor).detach().cpu().numpy()
 
-        feats_list.append(img_feat.reshape(-1))
+    tmp_recorder.start_record()
+    for _, (imgs, index) in enumerate(data_loader):
+        flatten_imgs = flatten_data(imgs, device)
+        # log.info(f"imgs: {imgs.shape}, {flatten_data(imgs, device).shape}")
+        with torch.no_grad():
+            tmp_recorder2.start_record()
+            imgs_feat = model(flatten_imgs).detach().cpu().numpy()
+            tmp_recorder2.end_record()
+
+            for img_feat in imgs_feat:
+                feats_list.append(img_feat.reshape(-1))
+    tmp_recorder.end_record()
+
     feats_array = np.array(feats_list)  # type: ignore
+
+    log.info(
+        f"file: {os.path.dirname(imgs_path_list[0])}, extract feats with device: {device}, batch size: 32, worker of dataloader: 8, total cost: {tmp_recorder.get_total_duration_miliseconds()} ms, each batch extarct cost: {tmp_recorder2.get_avg_duration_miliseconds()} ms"
+    )
+    # log.info(
+    #     f"preprocessor cost: {tmp_recorder.get_avg_duration_miliseconds()}, model cost: {tmp_recorder2.get_avg_duration_miliseconds()}"
+    # )
     return feats_array

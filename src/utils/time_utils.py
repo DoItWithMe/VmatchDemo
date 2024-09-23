@@ -32,3 +32,24 @@ class TimeRecorder:
     def clear_records(self):
         self._start_time_list.clear()
         self._end_time_list.clear()
+
+def milliseconds_to_hhmmss(ms: int):
+    # calculate total seconds
+    total_seconds = ms / 1000.0
+
+    # calculate hour, minute, seconds
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+
+    # format
+    return "{:02}:{:02}:{:02}".format(int(hours), int(minutes), int(seconds))
+
+
+def hhmmss_to_milliseconds(hhmmss: str) -> int:
+    # Split the input string by ':'
+    hours, minutes, seconds = map(int, hhmmss.split(":"))
+
+    # Convert everything to milliseconds
+    total_milliseconds = (hours * 3600 + minutes * 60 + seconds) * 1000
+
+    return total_milliseconds

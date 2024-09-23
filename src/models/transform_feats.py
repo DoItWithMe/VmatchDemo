@@ -109,24 +109,22 @@ def trans_isc_features_to_transVCL_fromat(
 
 
 def trans_isc_features_to_transVCL_fromat2(
-    sample_seg_id: int,
-    sample_feats: np.ndarray,
-    ref_seg_id_offset:int,
-    ref_feats_list: list[np.ndarray],
-    title: str,
-    segment_length: int,
+    sample_frame_offset: int,
+    sample_feat: np.ndarray,
+    ref_frame_offset: int,
+    ref_feat_list: list[np.ndarray],
     device: str = "cuda",
 ):
-    a = 1
     batch_list = []
+    segment_length = sample_feat.shape[0]
 
-    for ref_seg_id, ref_feats in enumerate(ref_feats_list):
-        sample_valid_len = len(sample_feats)
+    for ref_seg_id, ref_feats in enumerate(ref_feat_list):
+        sample_valid_len = len(sample_feat)
         ref_valid_len = len(ref_feats)
 
         # 创建填充后的张量
         sample_feat_padding = _feat_paddding(
-            torch.tensor(sample_feats, device=device), 0, segment_length
+            torch.tensor(sample_feat, device=device), 0, segment_length
         )
         ref_feat_padding = _feat_paddding(
             torch.tensor(ref_feats, device=device), 0, segment_length
@@ -147,14 +145,9 @@ def trans_isc_features_to_transVCL_fromat2(
                     torch.tensor([sample_valid_len], device=device).cpu(),
                     torch.tensor([ref_valid_len], device=device).cpu(),
                 ],
-                title,
-                sample_seg_id,
-                ref_seg_id + ref_seg_id_offset,
+                sample_frame_offset,
+                ref_seg_id * segment_length + ref_frame_offset,
             )
         )
-    
-    # log.info("print batch_list ==== ")
-    # for tmp in batch_list:
-    #     log.info(f"sample seg: {tmp[6]} -- ref seg: {tmp[7]}")
 
     return batch_list

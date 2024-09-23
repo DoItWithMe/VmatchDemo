@@ -65,6 +65,11 @@ class VideoSegment:
         self.ref_start_frame = ref_start_frame
         self.ref_end_frame = ref_end_frame
 
+        self.sample_start_ms = _hhmmss_to_milliseconds(sample_start_time)
+        self.sample_end_ms = _hhmmss_to_milliseconds(sample_end_time)
+        self.ref_start_ms = _hhmmss_to_milliseconds(ref_start_time)
+        self.ref_end_ms = _hhmmss_to_milliseconds(ref_end_time)
+
         self.score = score
         self.next_video_segment: Any = None
         self.choiced: bool = False
@@ -79,21 +84,20 @@ class VideoSegment:
 
     def __repr__(self) -> str:
         info = f"VideoSegment("
-        info += f"sample {self.sample_title} | seg {self.sample_seg_id} | {self.sample_start_time} - {self.sample_end_time} | {self.sample_start_frame} -- {self.sample_end_frame}, "
-        info += f"ref {self.ref_title} | seg {self.ref_seg_id} | {self.ref_start_time} - {self.ref_end_time} | {self.ref_start_frame} -- {self.ref_end_frame}, "
-        info += f"score={self.score}"
+        info += f"sample {self.sample_title} | {_milliseconds_to_hhmmss(self.sample_start_ms)} - {_milliseconds_to_hhmmss(self.sample_end_ms)} | {self.sample_start_frame} -- {self.sample_end_frame} <-> "
+        info += f"ref {self.ref_title} | {_milliseconds_to_hhmmss(self.ref_start_ms)} - {_milliseconds_to_hhmmss(self.ref_end_ms)} | {self.ref_start_frame} -- {self.ref_end_frame}, "
+        info += f"score={self.score}, choiced: {self.choiced}"
         info += f")"
         return info
 
-    def get_sample_len(self):
-        return _hhmmss_to_milliseconds(self.sample_end_time) - _hhmmss_to_milliseconds(
-            self.sample_start_time
-        )
+    def get_sample_duraion(self):
+        return self.sample_end_ms - self.sample_start_ms
 
-    def get_ref_len(self):
-        return _hhmmss_to_milliseconds(self.ref_end_time) - _hhmmss_to_milliseconds(
-            self.ref_start_time
-        )
+    def get_ref_duration(self):
+        return self.ref_end_ms - self.ref_start_ms
+
+    def get_ref_frame_len(self):
+        return self.ref_end_frame - self.ref_start_frame + 1
 
 
 def _postprocess(prediction, num_classes, conf_thre, nms_thre, class_agnostic=False):
@@ -167,7 +171,7 @@ def create_transvcl_model(
             the width of network.
         act (`str="silu"`):
             Types of activation functions.
-        num_classes (`bool=True`):
+        num_classes (`int=1`):
             The number of categories in the classification task.
         vta_config (`dict[str, Any]`):
             some args used by TransVCL, see class TransVCL for the details.
@@ -228,10 +232,9 @@ def gen_match_segments_by_transVCL(
     nmsthre: float,
     img_size: tuple[int, int],
     segment_length: int,
-    sample_frame_interval: float,
-    ref_frame_interval: float,
+    frame_interval: float,
     device: str = "cuda",
-):
+) -> list[VideoSegment]:
     """
     Using TransVCL for video copy positioning
 
@@ -254,11 +257,8 @@ def gen_match_segments_by_transVCL(
         segment_length (`int`):
             frames number of each segment
 
-        sample_frame_interval (`float`):
-            the frame interval(millisecond), sample
-
-        ref_frame_interval(`float`):
-            the frame interval(millisecond), sample
+        frame_interval (`float`):
+            the frame interval(millisecond)
 
         device (`str="cuda"`):
             Devices for model inference, must be same as the model use.
@@ -288,9 +288,8 @@ def gen_match_segments_by_transVCL(
             mask1,
             mask2,
             img_info,
-            title,
-            sample_seg_id,
-            ref_seg_id,
+            sample_frame_offset,
+            ref_frame_offset,
         ) = batch_feat
 
         sample_feat, ref_feat, mask1, mask2 = (
@@ -313,7 +312,7 @@ def gen_match_segments_by_transVCL(
                 mask1,
                 mask2,
                 [
-                    title,
+                    "",
                 ],
                 img_info,
             )
@@ -325,10 +324,6 @@ def gen_match_segments_by_transVCL(
                 nmsthre,
                 class_agnostic=True,
             )
-
-            # log.info(
-            #     f"title: {title}, sample seg id: {sample_seg_id}, ref seg id: {ref_seg_id}, outputs: {len(outputs)}"
-            # )
 
             for idx2, output in enumerate(outputs):
                 if output is not None:
@@ -342,46 +337,51 @@ def gen_match_segments_by_transVCL(
                     bboxes[:, 1:4:2] *= scale1[idx2]
                     outputs_list.append(
                         [
-                            title,
-                            sample_seg_id,
-                            ref_seg_id,
+                            "",
+                            sample_frame_offset,
+                            ref_frame_offset,
                             bboxes[:, (1, 0, 3, 2, 4)].tolist(),
                         ]
                     )
 
     # result = defaultdict(list)
 
-    result = list()
+    result: list[VideoSegment] = list()
 
     for output in outputs_list:
         # log.info(f"titile: {titile}")
         titile = output[0]
-        sample_title, ref_title = titile.split(",")
-        # i is sample segment seq
-        # j is reference segment seq
+        # sample_title, ref_title = titile.split(",")
+        sample_title = ""
+        ref_title = ""
+        # i is sample frame offset
+        # j is reference frame offset
         i = output[1]
         j = output[2]
 
         for r in output[3]:
-            sample_start_frame = math.floor((r[0] + i * segment_length))
-            ref_start_frame = math.floor((r[1] + j * segment_length))
-            sample_end_frame = math.ceil((r[2] + i * segment_length))
-            ref_end_frame = math.ceil((r[3] + j * segment_length))
+            sample_start_frame = math.floor((r[0] + i))
+            ref_start_frame = math.floor((r[1] + j))
 
+            sample_end_frame = math.ceil((r[2] + i))
+            ref_end_frame = math.ceil((r[3] + j))
+            
+            sample_start_frame = max(sample_start_frame, 0)
+            ref_start_frame = max(ref_start_frame, 0)
+            sample_end_frame = max(sample_end_frame, 0)
+            ref_end_frame = max(ref_end_frame, 0)
             # log.info(f"sample seg: {i}, sample: {sample_start_frame} -- {sample_end_frame} || ref seg: {j}, ref: {ref_start_frame} -- {ref_end_frame}")
 
             sample_start_timeformat = _milliseconds_to_hhmmss(
-                sample_start_frame * sample_frame_interval
+                int(sample_start_frame * frame_interval)
             )
             ref_start_timeformat = _milliseconds_to_hhmmss(
-                ref_start_frame * ref_frame_interval
+                int(ref_start_frame * frame_interval)
             )
             sample_end_timeformat = _milliseconds_to_hhmmss(
-                sample_end_frame * sample_frame_interval
+                int(sample_end_frame * frame_interval)
             )
-            ref_end_timeformat = _milliseconds_to_hhmmss(
-                ref_end_frame * ref_frame_interval
-            )
+            ref_end_timeformat = _milliseconds_to_hhmmss(int(ref_end_frame * frame_interval))
             confirm_score = round(r[4] * 100.000, 2)
 
             video_match_segment = VideoSegment(
@@ -392,8 +392,8 @@ def gen_match_segments_by_transVCL(
                 score=confirm_score,
                 sample_title=sample_title,
                 ref_title=ref_title,
-                sample_seg_id=i,
-                ref_seg_id=j,
+                sample_seg_id=-1,
+                ref_seg_id=-1,
                 sample_start_frame=sample_start_frame,
                 sample_end_frame=sample_end_frame,
                 ref_start_frame=ref_start_frame,
