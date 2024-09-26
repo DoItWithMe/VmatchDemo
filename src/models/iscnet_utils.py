@@ -10,10 +10,10 @@ from torchvision import transforms
 from PIL import Image
 from loguru import logger as log
 from torch.utils.data import DataLoader, Dataset
-from .exception import _exception_handler
+from .exception import exception_handler
 
 
-class _IscNetDataSet(Dataset):
+class __IscNetDataSet(Dataset):
     def __init__(
         self,
         imgs_path_list,
@@ -39,8 +39,7 @@ class _IscNetDataSet(Dataset):
         )
 
 
-@_exception_handler
-def _flatten_data(samples, device):
+def __flatten_data(samples, device):
     # batch_size = samples.size(0)
     # num_samples_per_image = samples.size(1)
     channels = samples.size(2)
@@ -50,7 +49,7 @@ def _flatten_data(samples, device):
     return samples.view(-1, channels, height, width).to(device)
 
 
-@_exception_handler
+@exception_handler
 def create_isc_model(
     weight_file_path: str,
     fc_dim: int = 256,
@@ -59,31 +58,20 @@ def create_isc_model(
     l2_normalize: bool = True,
     device: str = "cuda",
     is_training: bool = False,
-):
-    """
-    Create a model for image copy-detection task.
+) -> tuple[nn.DataParallel[ISCNet] | ISCNet, transforms.Compose]:
+    """create_isc_model _summary_
 
     Args:
-        weight_file_path (`str=None`):
-            Weight file path.
-        fc_dim (`int=256`):
-            Feature dimension of the fc layer.
-        p (`float=1.0`):
-            Power used in gem pooling for training.
-        eval_p (`float=1.0`):
-            Power used in gem pooling for evaluation.
-        l2_normalize (`bool=True`):
-            Whether to normalize the feature vector.
-        device (`str='cuda'`):
-            Device to load the model.
-        is_training (`bool=False`):
-            Whether to load the model for training.
+        weight_file_path (str): _description_
+        fc_dim (int, optional): _description_. Defaults to 256.
+        p (float, optional): _description_. Defaults to 1.0.
+        eval_p (float, optional): _description_. Defaults to 1.0.
+        l2_normalize (bool, optional): _description_. Defaults to True.
+        device (str, optional): _description_. Defaults to "cuda".
+        is_training (bool, optional): _description_. Defaults to False.
 
     Returns:
-        model:
-            ISCNet model.
-        preprocessor:
-            Preprocess function tied to model.
+        tuple[nn.DataParallel[ISCNet] | ISCNet, transforms.Compose]: _description_
     """
     if device == "cuda":
         ckpt = torch.load(weight_file_path)
@@ -155,31 +143,28 @@ def create_isc_model(
     return model, preprocessor
 
 
-@_exception_handler
+@exception_handler
 def gen_img_feats_by_ISCNet(
     imgs_path_list: list[str],
     model: nn.Module,
     preprocessor: transforms.Compose,
     device: str = "cuda",
 ):
-    """
-    Generate image features by ISCNet model
+    """gen_img_feats_by_ISCNet _summary_
 
     Args:
-        imgs_path_list (`list[str]`):
-            Weight file path.
-        model (`nn.Module`):
-            ISCNet model
-        preprocessor (`Compose`):
-            Image preprocessing operations must include converting images into torch.Tensor
-        device (`str='cuda'`):
-            Devices for model inference, must be same as the model use.
+        imgs_path_list (list[str]): _description_
+        model (nn.Module): _description_
+        preprocessor (transforms.Compose): _description_
+        device (str, optional): _description_. Defaults to "cuda".
+
+    Raises:
+        RuntimeError: _description_
+        RuntimeError: _description_
+        RuntimeError: _description_
 
     Returns:
-        feats_array (`NDArray[numpy[n,m], dtype=np.float32]`):
-            the NDArray of imgs features\n
-            n = len(imgs_path_list)\n
-            m = model output features dim\n
+        _type_: _description_
 
     ISCNet Usage:
         url = "http://images.cocodataset.org/val2017/000000039769.jpg"\n
@@ -188,6 +173,7 @@ def gen_img_feats_by_ISCNet(
         y = model(x)\n
         log.info(y.shape)  # => torch.Size([1, 256])\n
     """
+
     if isinstance(model, nn.DataParallel):
         if not isinstance(model.module, ISCNet):
             raise RuntimeError(f"unknown model: {type(model)} -- {type(model.module)}")
@@ -203,7 +189,7 @@ def gen_img_feats_by_ISCNet(
     tmp_recorder = TimeRecorder()
     tmp_recorder2 = TimeRecorder()
 
-    dataset = _IscNetDataSet(imgs_path_list, preprocessor)
+    dataset = __IscNetDataSet(imgs_path_list, preprocessor)
     data_loader = DataLoader(
         dataset,
         batch_size=32,
@@ -216,7 +202,7 @@ def gen_img_feats_by_ISCNet(
 
     tmp_recorder.start_record()
     for _, (imgs, index) in enumerate(data_loader):
-        flatten_imgs = _flatten_data(imgs, device)
+        flatten_imgs = __flatten_data(imgs, device)
         with torch.no_grad():
             tmp_recorder2.start_record()
             imgs_feat = model(flatten_imgs).detach().cpu().numpy()

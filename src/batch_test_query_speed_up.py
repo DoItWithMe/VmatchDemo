@@ -981,4 +981,3 @@ def main():
 if __name__ == "__main__":
     print(f"torch.get_num_threads(): {torch.get_num_threads()}")
     main()
-    from isc_feature_extractor import create_model

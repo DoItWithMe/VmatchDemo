@@ -5,83 +5,27 @@ _project_dipath: str = os.path.dirname((os.path.abspath(__file__)))
 sys.path.append(_project_dipath)
 
 import argparse
-import torch
+from configs.configs import init_server_config, get_server_config, ServerConfig
+from log.log import init_logger
+from loguru import logger
+from milvus.milvus_manager import (
+    init_milvus_client_manager,
+    get_milvus_client_manager,
+    MilvusClientManager,
+)
+
+# tmp
+from typing import Any
 import numpy as np
+from numpy import ndarray
+from utils.time_utils import TimeRecorder
+from results_handler.query_results_handler import handler_query_results
 
-from models.iscnet_utils import create_isc_model, gen_img_feats_by_ISCNet
-from models.transvcl_utils import create_transvcl_model, gen_match_segments_by_transVCL
-from models.transform_feats import trans_isc_features_to_transVCL_fromat
-from ffmpeg.ffmpeg import extract_imgs
-
-from loguru import logger as log
-
-DEVICE_LIST = ["cpu", "cuda"]
-MIN_SEGMENT_LENGTH = 100
+# import uuid
 
 
 def parser_args():
     parser = argparse.ArgumentParser()
-
-    parser.add_argument(
-        "--ffmpeg",
-        type=str,
-        help="ffmpeg bin file path",
-        default="./assets/ffmpeg",
-        required=False,
-    )
-
-    parser.add_argument(
-        "--isc-weight",
-        type=str,
-        help="isc weight path",
-        default="./assets/models/isc_ft_v107.pth.tar",
-        required=False,
-    )
-
-    parser.add_argument(
-        "--conf-thre",
-        type=float,
-        default=0.6,
-        help="transVCL: conf threshold of copied segments    ",
-    )
-
-    parser.add_argument(
-        "--nms-thre",
-        type=float,
-        default=0.3,
-        help="transVCL: nms threshold of copied segments",
-    )
-
-    parser.add_argument(
-        "--img-size",
-        type=int,
-        default=640,
-        help="transVCL: length for copied localization module",
-    )
-
-    parser.add_argument(
-        "--fps",
-        type=int,
-        default=1,
-        help="output fps when converting video to images",
-    )
-
-    parser.add_argument(
-        "--segment-duration",
-        type=int,
-        default=200,
-        help="transVCL: segment duration in milliseconds",
-    )
-
-    parser.add_argument(
-        "--transVCL-weight",
-        type=str,
-        help="transVCL weight path",
-        default="./assets/models/tarnsVCL_model_1.pth",
-        required=False,
-    )
-
-    parser.add_argument("--device", type=str, help="cpu or cuda", default="cuda")
 
     parser.add_argument(
         "--output-dir",
@@ -92,175 +36,116 @@ def parser_args():
     )
 
     parser.add_argument(
-        "--sample-file-path",
+        "--sample-videos-dir",
         "-s",
         type=str,
-        help="input sample media file path",
+        help="input sample media videos dir",
         required=True,
     )
 
     parser.add_argument(
-        "--reference-file-path",
+        "--reference-videos-dir",
         "-r",
         type=str,
-        help="input reference media file path",
+        help="input reference media videos dir",
+        required=True,
+    )
+
+    parser.add_argument(
+        "--config-path",
+        "-c",
+        type=str,
+        help="config path",
         required=True,
     )
 
     return parser.parse_args()
 
 
-def check_args(args):
-    if args.device == "cuda":
-        if not torch.cuda.is_available():
-            log.warning("gpu is not available, use cpu")
-            args.device = "cpu"
+def load_feats(feats_store_dir_path: str) -> dict[str, Any]:
+    feat_dict: dict[str, Any] = dict()
+    feats_files_list: list[str] = [
+        os.path.join(feats_store_dir_path, file_name)
+        for file_name in os.listdir(feats_store_dir_path)
+    ]
 
-    if args.device not in DEVICE_LIST:
-        log.error(
-            f"unkown device: {args.device}, only thess is available: {DEVICE_LIST}"
+    count = 0
+    for feats_file in feats_files_list:
+        feat_dict[os.path.splitext(os.path.basename(feats_file))[0]] = np.load(
+            feats_file
         )
-        exit(-1)
+        count += 1
+    logger.info(f"load feats of {feats_store_dir_path}")
 
-    if args.segment_duration < MIN_SEGMENT_LENGTH:
-        log.error(f"segment duration can not smaller than {MIN_SEGMENT_LENGTH}")
-        exit(-1)
+    return feat_dict
 
+def add_ref(ref_feat_dict: dict[str, ndarray]):
+    milvus_manager: MilvusClientManager = get_milvus_client_manager()
+    time_recorder = TimeRecorder()
+    for ref_name, ref_feat in ref_feat_dict.items():
+        logger.info(f"start add ref embeddings of {ref_name}")
+        time_recorder.start_record()
+        milvus_manager.add_ref_embedding(ref_name=ref_name, ref_embeddings=ref_feat)
+        time_recorder.end_record()
 
-def init_log():
-    log.remove()
-    log.add(
-        sys.stdout,
-        format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {name}:{line} | {message}",
+    logger.info(
+        f"add {len(list(ref_feat_dict.keys()))} refs, avg cost: {time_recorder.get_avg_duration_miliseconds()} ms"
     )
 
+def query(sample_feat_dict: dict[str, ndarray]):
+    segment_len_limit = 8 * 3
+    sample_name_list = list(sample_feat_dict.keys())
+    sample_name_list = sorted(sample_name_list, key=lambda x: int(x.split("_")[1]))
+    milvus_manager: MilvusClientManager = get_milvus_client_manager()
+    l2_dis_thresh = 1.1
+    for sample_name in sample_name_list:
+        sample_feat = sample_feat_dict[sample_name]
+        results = milvus_manager.search_matched_embeddings(sample_feat.tolist(), 3 * 3 * 8)
+        # logger.info(f"results: {results[0]}")
+        
+        handler_query_results(
+            l2_dis_thresh,
+            results,
+            segment_len_limit,
+            sample_name,
+        )
+        break
+
+
+def main() -> None:
+    svr_args = parser_args()
+    init_server_config(svr_args.config_path)
+    svr_cfg: ServerConfig = get_server_config()
+    init_logger(svr_cfg.get_log_config())
+    init_milvus_client_manager(
+        svr_cfg.get_milvus_embedding_cfg(), svr_cfg.get_milvus_media_info_cfg()
+    )
+
+    milvus_manager: MilvusClientManager = get_milvus_client_manager()
+
+    # just for test
+
+    fps = 8
+    output_dir: str = svr_args.output_dir
+
+    ref_videos_dir_path = os.path.normpath(svr_args.reference_videos_dir)
+    sample_videos_dir_path = os.path.normpath(svr_args.sample_videos_dir)
+
+    ref_output_base_name: str = f"{os.path.basename(ref_videos_dir_path)}_fps_{fps}"
+    sample_output_base_name: str = (
+        f"{os.path.basename(sample_videos_dir_path)}_fps_{fps}"
+    )
+
+    ref_feat_output_dir: str = os.path.join(output_dir, "feats", ref_output_base_name)
+    sample_feat_output_dir: str = os.path.join(
+        output_dir, "feats", sample_output_base_name
+    )
+
+    ref_feat_dict: dict[str, ndarray] = load_feats(ref_feat_output_dir)
+    sample_feat_dict: dict[str, ndarray] = load_feats(sample_feat_output_dir)
+    
+    # add_ref(ref_feat_dict)
+    query(sample_feat_dict)
 
 if __name__ == "__main__":
-    # torch.set_num_threads(16)
-    init_log()
-    args = parser_args()
-    check_args(args)
-
-    device = args.device
-
-    ffmpeg_path = args.ffmpeg
-
-    ref_file_path = args.reference_file_path
-    sample_file_path = args.sample_file_path
-
-    output_dir = args.output_dir
-
-    isc_weight_path = args.isc_weight
-    transvcl_weight_path = args.transVCL_weight
-
-    confthre = args.conf_thre
-    nmsthre = args.nms_thre
-    img_size = (args.img_size, args.img_size)
-
-    segment_duration: int = args.segment_duration
-
-    fps = args.fps
-    frame_interval = 1000.0 / float(fps)
-
-    if frame_interval > segment_duration:
-        log.warning(
-            f"fps is {fps}, frame interval {frame_interval} ms is bigger than segment duration: {segment_duration} ms"
-        )
-        segment_duration = round(frame_interval * 10)
-        log.warning(f"segment duration reset to {segment_duration} ms")
-
-    segment_length = round(segment_duration / frame_interval)
-    log.info(
-        f"segment_length: {segment_length} segment_duration: {segment_duration}, frame_interval: {frame_interval}"
-    )
-
-    # get imgs from reference media file and sample media file
-    log.info(f"start get imgs from {ref_file_path}, img fps: {fps}")
-    ref_imgs_dir_path = extract_imgs(ffmpeg_path, ref_file_path, output_dir, fps)
-    ref_imgs_list = [
-        os.path.join(ref_imgs_dir_path, img_name)
-        for img_name in os.listdir(ref_imgs_dir_path)
-    ]
-
-    log.info(f"start get imgs from {sample_file_path}, img fps: {fps}")
-    sample_imgs_dir_path = extract_imgs(ffmpeg_path, sample_file_path, output_dir, fps)
-    sample_imgs_list = [
-        os.path.join(sample_imgs_dir_path, img_name)
-        for img_name in os.listdir(sample_imgs_dir_path)
-    ]
-
-    log.info("create isc model")
-    isc_model, isc_processer = create_isc_model(
-        weight_file_path=isc_weight_path, device=device, is_training=False
-    )
-
-    log.info(f"gen ref feats, ref imgs len: {len(ref_imgs_list)}")
-    # it's very slow when use cpu to generate image feats....
-    ref_isc_feats = gen_img_feats_by_ISCNet(
-        ref_imgs_list, isc_model, isc_processer, device
-    )
-    log.info(f"get ref feats: {ref_isc_feats.shape}")
-
-    log.info(f"gen sample feats, sample imgs len: {len(sample_imgs_list)}")
-    sample_isc_feats = gen_img_feats_by_ISCNet(
-        sample_imgs_list, isc_model, isc_processer, device
-    )
-    log.info(f"get sample feats: {sample_isc_feats.shape}")
-
-    # tmp code
-    sample_feats_path = os.path.join(
-        "./output/single_test",
-        f"{os.path.splitext(os.path.basename(sample_file_path))[0]}.npy",
-    )
-
-    ref_feats_path = os.path.join(
-        "./output/single_test",
-        f"{os.path.splitext(os.path.basename(ref_file_path))[0]}.npy",
-    )
-
-    log.info("save sample feats")
-    os.makedirs(os.path.dirname(sample_feats_path), exist_ok=True)
-    np.save(sample_feats_path, sample_isc_feats)
-
-    log.info("save ref feats")
-    os.makedirs(os.path.dirname(ref_feats_path), exist_ok=True)
-    np.save(ref_feats_path, ref_isc_feats)
-
-    log.info("create transvcl model")
-    transvcl_model = create_transvcl_model(
-        weight_file_path=transvcl_weight_path, device=device, is_training=False
-    )
-
-    log.info("load isc feats")
-    sample_isc_feats = np.load(sample_feats_path)
-    ref_isc_feats = np.load(ref_feats_path)
-
-    log.info(
-        f"isc feat shape: sample: {sample_isc_feats.shape}, ref: {ref_isc_feats.shape}"
-    )
-
-    compare_name = (
-        os.path.splitext(os.path.basename(sample_file_path))[0]
-        + "-"
-        + os.path.splitext(os.path.basename(ref_file_path))[0]
-    )
-
-    log.info("trans isc feats to transVCL feature format")
-    transvcl_batch_feats = trans_isc_features_to_transVCL_fromat(
-        sample_isc_feats, ref_isc_feats, compare_name, segment_length
-    )
-
-    log.info("query transVCL")
-    matched_segments = gen_match_segments_by_transVCL(
-        transvcl_model,
-        transvcl_batch_feats,
-        confthre,
-        nmsthre,
-        img_size,
-        segment_length,
-        frame_interval,
-        frame_interval,
-        device,
-    )
-    for matched_seg_title in matched_segments:
-        log.info(f"matched_segments: {matched_segments[matched_seg_title]}")
+    main()

@@ -2,9 +2,9 @@ import subprocess
 import os
 import shutil
 import signal
-from .exception import _exception_handler
+from .exception import exception_handler
 
-@_exception_handler
+@exception_handler
 def extract_imgs(
     ffmpeg_bin_file_path: str, input_file_path: str, output_imgs_dir_path: str, fps: int
 ) -> str:

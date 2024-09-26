@@ -75,7 +75,12 @@ def parser_args():
 def create_milvus_client(
     embedding_collection_name: str, media_info_collection_name: str
 ):
-    milvus_client = MilvusClient("./milvus_match_demo.db")
+    index_type = "FLAT"
+    nlist = 4096
+    metric_type = "L2"
+
+    local_db_name = f"milvus_match_demo_{index_type}_{nlist}_{metric_type}.db"
+    milvus_client = MilvusClient(local_db_name)
     return milvus_client
 
     if milvus_client.has_collection(collection_name=embedding_collection_name):
@@ -97,7 +102,13 @@ def create_milvus_client(
     )
 
     embedding_index_params = IndexParams()
-    embedding_index_params.add_index("embedding", "", "", metric_type="L2")
+    embedding_index_params.add_index(
+        field_name="embedding",
+        index_type=index_type,
+        index_name="video_embedding_ivf_sq8",
+        metric_type=metric_type,
+        nlist=nlist,
+    )
 
     milvus_client.create_collection(
         collection_name=embedding_collection_name,
@@ -278,8 +289,10 @@ def _query(
 ):
 
     segment_len_limit = 8 * 3
-
-    for sample_name, sample_feat in sample_feat_dict.items():
+    sample_name_list = list(sample_feat_dict.keys())
+    sample_name_list = sorted(sample_name_list, key=lambda x: int(x.split("_")[1]))
+    for sample_name in sample_name_list:
+        sample_feat = sample_feat_dict[sample_name]
         # if sample_name != "R_2_jieshuo" and sample_name != "R_2_jieshuo":
         #     continue
 
@@ -299,6 +312,8 @@ def _query(
             segment_len_limit,
             sample_name,
         )
+        # break
+
 
 def main():
     init_log()

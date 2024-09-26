@@ -1,8 +1,12 @@
 from typing import Any
 from loguru import logger as log
 from pydantic import BaseModel
-from pymilvus import MilvusClient
 from utils.time_utils import milliseconds_to_hhmmss
+from milvus.milvus_manager import (
+    get_milvus_client_manager,
+    MilvusClientManager,
+)
+from .exception import exception_handler
 
 
 class MediaDes(BaseModel):
@@ -45,7 +49,7 @@ class QueryResultHandler:
         return False
 
     @classmethod
-    def _merge_distance(
+    def __merge_distance(
         cls, s1: int, e1: int, s2: int, e2: int, dis1: float, dis2: float
     ) -> float:
         len1 = e1 - s1
@@ -77,7 +81,7 @@ class QueryResultHandler:
         else:
             return -1.0
 
-    def _merge_match_frame(
+    def __merge_match_frame(
         self,
         ref_name: str,
         new_res_list: list[QueryResult],
@@ -199,23 +203,7 @@ class QueryResultHandler:
                     f"result s id: {r.sample_start_index} - {r.sample_end_index}, result ref id: {r.ref_start_index} - {r.ref_end_index}, remove: {r.remove_flag}"
                 )
 
-    def merge_match_frame(
-        self,
-        new_res_dict: dict[str, list[QueryResult]],
-    ):
-        for new_ref_name in new_res_dict.keys():
-            new_res_list = new_res_dict[new_ref_name]
-            new_res_list.sort(key=lambda res: res.ref_start_index)
-            if new_ref_name not in self.query_result_dict.keys():
-                self.query_result_dict[new_ref_name] = list()
-                self.query_result_dict[new_ref_name].extend(new_res_list)
-                self.quick_search_result_dict[new_ref_name] = [
-                    i for i in range(len(self.query_result_dict[new_ref_name]))
-                ]
-            else:
-                self._merge_match_frame(new_ref_name, new_res_list)
-
-    def _merge_match_segments(
+    def __merge_match_segments(
         self,
         ref_name: str,
     ):
@@ -323,7 +311,7 @@ class QueryResultHandler:
                             log.info(
                                 f"res is removed: s: {next_query_res.sample_start_index} - {next_query_res.sample_end_index}, r: {next_query_res.ref_start_index} - {next_query_res.ref_end_index}"
                             )
-                        merge_query_res.distance = self._merge_distance(
+                        merge_query_res.distance = self.__merge_distance(
                             merge_query_res.ref_start_index,
                             merge_query_res.ref_end_index,
                             next_query_res.ref_start_index,
@@ -352,10 +340,29 @@ class QueryResultHandler:
                 )
         # time_cost += get_current_unix_timestamp() - t1
 
+    @exception_handler
+    def merge_match_frame(
+        self,
+        new_res_dict: dict[str, list[QueryResult]],
+    ):
+        for new_ref_name in new_res_dict.keys():
+            new_res_list = new_res_dict[new_ref_name]
+            new_res_list.sort(key=lambda res: res.ref_start_index)
+            if new_ref_name not in self.query_result_dict.keys():
+                self.query_result_dict[new_ref_name] = list()
+                self.query_result_dict[new_ref_name].extend(new_res_list)
+                self.quick_search_result_dict[new_ref_name] = [
+                    i for i in range(len(self.query_result_dict[new_ref_name]))
+                ]
+            else:
+                self.__merge_match_frame(new_ref_name, new_res_list)
+
+    @exception_handler
     def merge_match_segments(self):
         for ref_name in self.query_result_dict.keys():
-            self._merge_match_segments(ref_name)
+            self.__merge_match_segments(ref_name)
 
+    @exception_handler
     def filter_valid_match_segment(self):
         for ref_name in self.query_result_dict.keys():
             src_list = self.query_result_dict[ref_name]
@@ -374,10 +381,16 @@ class QueryResultHandler:
             self.query_result_dict[ref_name][:] = []
             self.query_result_dict[ref_name].extend(tmp_list)
 
-    def just_dump(self, with_time: bool):
+    @exception_handler
+    def just_dump(self, with_time: bool, sample_name: str, sample_total_len: int):
+        log.info(f"sample name: {sample_name} matched with:::: ")
+        s_matched_duration_ms_t = 0.0
         for ref_name in self.query_result_dict.keys():
+            if len(self.query_result_dict[ref_name]) <= 0:
+                continue
 
             log.info(f"ref: {ref_name} -----")
+            s_matched_duration_ms = 0.0
             for res in self.query_result_dict[ref_name]:
                 if not with_time:
                     log.info(
@@ -388,6 +401,7 @@ class QueryResultHandler:
                     s_e_t = (res.sample_end_index + 1) * 125
                     r_s_t = res.ref_start_index * 125
                     r_e_t = (res.ref_end_index + 1) * 125
+                    s_matched_duration_ms += s_e_t - s_s_t
 
                     s_s_t_t = milliseconds_to_hhmmss(s_s_t)
                     s_e_t_t = milliseconds_to_hhmmss(s_e_t)
@@ -398,103 +412,18 @@ class QueryResultHandler:
                         f"s: {s_s_t_t} - {s_e_t_t}, ref: {r_s_t_t} - {r_e_t_t}, remove: {res.remove_flag}"
                     )
 
-            log.info("------\n")
-
-    #     self,
-    #     total_cost: float,
-    #     search_cost: float,
-    #     sample_des: MediaDes,
-    # ):
-    #     num = 0
-    #     sample_len = sample_des.frame_total_len
-    #     sample_name = sample_des.name
-    #     sample_duration = sample_len * sample_des.avg_frame_time
-
-    #     for ref_name, ref_list in self.query_result_dict.items():
-    #         if len(ref_list) == 0:
-    #             continue
-
-    #         # if ref_name == "1441021264.vdna":
-    #         log.info(" DUMP -- DUMP -- DUMP -- " * 5)
-    #         for i in ref_list:
-    #             log.info(
-    #                 f"s: {i.sample_start_index} - {i.sample_end_index}, r: {i.ref_start_index} - {i.ref_end_index}"
-    #             )
-
-    #         total_match_ref_len = 0.0
-    #         total_match_percent = 0.0
-    #         total_match_sample_len = 0.0
-    #         total_avg_dis = 0.0
-    #         total_match_duration = 0.0
-    #         last_s_s = -1
-    #         last_s_e = -1
-    #         last_r_e = -1
-    #         match_log = "==== MATCH LOG ==== " * 10 + "\n"
-    #         ref_len = ref_list[0].media_des.frame_total_len
-
-    #         for ref in ref_list:
-    #             match_ref_len = ref.ref_end_index - ref.ref_start_index + 1
-    #             match_sample_len = ref.sample_end_index - ref.sample_start_index + 1
-    #             match_percent = -1.0
-    #             avg_dis = ref.distance / match_ref_len
-
-    #             if sample_len != 0:
-    #                 match_percent = match_ref_len / sample_len * 100.0
-
-    #             if (
-    #                 last_s_s <= ref.sample_start_index
-    #                 and last_s_e >= ref.sample_start_index
-    #             ):
-    #                 continue
-
-    #             if (
-    #                 last_s_e <= ref.sample_start_index
-    #                 and last_r_e <= ref.ref_start_index
-    #             ) or (
-    #                 last_s_e != ref.sample_end_index
-    #                 and (last_r_e - ref.ref_start_index + 1) >= 0.5 * (ref_len)
-    #             ):
-    #                 sample_start_time = (
-    #                     ref.sample_start_index * sample_des.avg_frame_time
-    #                 )
-    #                 sample_end_time = (
-    #                     ref.sample_end_index + 1
-    #                 ) * sample_des.avg_frame_time
-    #                 ref_start_time = (
-    #                     ref.ref_start_index
-    #                 ) * ref.media_des.avg_frame_time
-    #                 ref_end_time = (ref.ref_end_index) * ref.media_des.avg_frame_time
-
-    #                 total_match_ref_len += match_ref_len
-    #                 total_match_sample_len += match_sample_len
-    #                 total_match_percent += match_percent
-    #                 total_avg_dis += avg_dis
-    #                 total_match_duration += sample_end_time - sample_start_time
-    #                 match_log += f"{sample_name} match with {ref_name}, s: {ref.sample_start_index} - {ref.sample_end_index} r: {ref.ref_start_index} - {ref.ref_end_index} --- sample: {sample_start_time} - {sample_end_time} - d: {sample_end_time - sample_start_time }, ref: {ref_start_time} - {ref_end_time} - d: {ref_end_time - ref_start_time}\n"
-    #                 last_s_s = ref.sample_start_index
-    #                 last_s_e = ref.sample_end_index
-    #                 last_r_e = ref.ref_end_index
-    #             num += 1
-
-    #         if (
-    #             total_match_duration > 0.1 * sample_duration
-    #             or ref_name.split(".")[0] in sample_name
-    #         ):
-    #             log.info(
-    #                 match_log
-    #                 + f"{sample_name} match with {ref_name}, total match duration: {int(total_match_duration + 0.5)} s, sample_duration: {sample_duration}\n"
-    #             )
-
-    #             if sample_name == ref_name and total_match_duration != sample_duration:
-    #                 log.info(f"attention it, match rate too small: {sample_name}")
-
-    #     if num == 0:
-    #         log.info(f"sample_name: {sample_name} have no match, attetion it!!!!!")
+            s_matched_duration_ms_t += s_matched_duration_ms
+            log.info(f"-- sample: {sample_name} matched with ref: {ref_name} ---")
+            log.info(
+                f"sample duration: {(sample_total_len * 125 /1000.0):.3f} s, valid duration: {(s_matched_duration_ms/1000.0):.3f} -- {(s_matched_duration_ms/sample_total_len / 125.0 * 100.0 ):.2f}%\n"
+            )
+        log.info(
+            f"sample: {sample_name}, duration: {(sample_total_len * 125 /1000.0):.3f} s, total valid duration: {(s_matched_duration_ms_t/1000.0):.3f} -- {(s_matched_duration_ms_t/sample_total_len / 125.0 * 100.0 ):.2f}%\n\n"
+        )
 
 
+@exception_handler
 def handler_query_results(
-    milvus_client: MilvusClient,
-    media_info_collection_name: str,
     l2_dis_thresh: float,
     results: list[list[dict[Any, Any]]],
     segment_len_limit: int,
@@ -505,6 +434,8 @@ def handler_query_results(
     media_des_cache_dict: dict[str, MediaDes] = dict()
 
     tmp_query_result_dict: dict[str, list[QueryResult]] = dict()
+
+    milvus_manager: MilvusClientManager = get_milvus_client_manager()
 
     for i in range(len(results)):
         tmp_query_result_dict.clear()
@@ -524,11 +455,7 @@ def handler_query_results(
             media_des = None
 
             if ref_uuid not in media_des_cache_dict.keys():
-                ref_info = milvus_client.query(
-                    media_info_collection_name,
-                    filter=f'uuid in ["{ref_uuid}",]',
-                    output_fields=["filename", "frame_total_len", "uuid"],
-                )
+                ref_info = milvus_manager.query_media_info(ref_uuid)
                 ref_file_name = ref_info[0]["filename"]
                 frame_total_len = ref_info[0]["frame_total_len"]
                 media_des = MediaDes(
@@ -562,12 +489,5 @@ def handler_query_results(
     query_result_handler.merge_match_segments()
     query_result_handler.filter_valid_match_segment()
 
-    log.info(f"sample name: {sample_name} matched with:::: ")
-    query_result_handler.just_dump(True)
-
-    # sample_des = MediaDes(
-    #     name="xxx",
-    #     frame_total_len=len(results),
-    #     avg_frame_time=125.0,
-    # )
-    # query_result_handler.dump(-1, -1, sample_des)
+    samle_frame_len = len(results)
+    query_result_handler.just_dump(True, sample_name, samle_frame_len)
